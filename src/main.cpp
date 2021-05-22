@@ -11,6 +11,8 @@
 #include <DallasTemperature.h> // http://milesburton.com/index.php/Dallas_Temperature_Control_Library
 #include <Screens.h>
 #include <NTPClient.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
 #include "config.h"
 
 // GPIOs
@@ -115,6 +117,9 @@ OneWire oneWire(PIN_ONE_WIRE_BUS);
 // Pass our oneWire reference to Dallas Temperature.
 DallasTemperature sensors(&oneWire);
 
+// BME280 Sensor
+Adafruit_BME280 bme; // I2C
+
 // LCD Screen Switching
 Screens screen(3, SHOW_SCREEN_0_TIME, SHOW_SCREEN_1_TIME, SHOW_SCREEN_2_TIME);
 
@@ -150,7 +155,7 @@ void getTemps()
     tempSensorValues[i] = sensors.getTempC(tempSensors[i]);
     if (tempSensorValues[i] == DEVICE_DISCONNECTED_C)
     {
-      Serial.printf("[getTemps] #%i: disconnected\n", i, tempSensorValues[i]);
+      Serial.printf("[getTemps] #%i: disconnected\n", i);
     }
     else
     {
@@ -599,6 +604,33 @@ void setup(void)
   pinMode(PIN_TOUCHSENSOR, INPUT);
   pinMode(PIN_WATERSENSOR, INPUT);
 
+  // BME Begin
+  // status = bme.begin(0x76, &Wire2)
+  if (!bme.begin(BME280_ADDRESS_ALTERNATE))
+  {
+    Serial.println("Could not find a valid BME280 sensor, check wiring, address, sensor ID!");
+    Serial.print("SensorID was: 0x");
+    Serial.println(bme.sensorID(), 16);
+  }
+  else
+  {
+    Serial.println("Found valid BME280 sensor!");
+    Serial.print("Temperature = ");
+    Serial.print(bme.readTemperature());
+    Serial.println(" °C");
+
+    Serial.print("Pressure = ");
+
+    Serial.print(bme.readPressure() / 100.0F);
+    Serial.println(" hPa");
+
+    Serial.print("Humidity = ");
+    Serial.print(bme.readHumidity());
+    Serial.println(" %");
+
+    Serial.println();
+  }
+
   // LCD begin
   while (lcd.begin(LCD_COLUMS, LCD_ROWS) != 1)
   {
@@ -627,6 +659,25 @@ void setup(void)
   lcd.print(F("   "));
   lcd.write(2);
   lcd.print(F(" Fabian Otto "));
+
+  lcd.backlight();
+  delay(500);
+  lcd.noBacklight();
+  delay(500);
+  lcd.backlight();
+  delay(500);
+  lcd.noBacklight();
+  delay(500);
+  lcd.backlight();
+  delay(500);
+  lcd.noBacklight();
+  delay(500);
+  lcd.backlight();
+  delay(500);
+  lcd.noBacklight();
+  delay(500);
+  lcd.backlight();
+
   delay(2000);
 
   // Wifi connect
