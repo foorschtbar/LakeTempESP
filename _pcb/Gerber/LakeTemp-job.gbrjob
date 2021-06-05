@@ -5,9 +5,9 @@
     {
       "Vendor":      "KiCad",
       "Application": "Pcbnew",
-      "Version":     "(5.1.9)-1"
+      "Version":     "(5.1.10)-1"
     },
-    "CreationDate":  "2021-05-22T23:47:25+02:00"
+    "CreationDate":  "2021-05-24T15:00:52+02:00"
   },
   "GeneralSpecs":
   {
@@ -15,7 +15,7 @@
     {
       "Name": "LakeTemp",
       "GUID": "4c616b65-5465-46d7-902e-6b696361645f",
-      "Revision": "1.0"
+      "Revision": "v1.0"
     },
     "Size":
     {
