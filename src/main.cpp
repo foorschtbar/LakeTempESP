@@ -3,6 +3,7 @@
 #include <ESP8266HTTPClient.h>
 #include <WiFiClientSecureBearSSL.h>
 #include <ESP8266WebServer.h>
+#include <ESP8266HTTPUpdateServer.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <WiFiUdp.h>
@@ -13,12 +14,14 @@
 #include <NTPClient.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
+#include <Adafruit_NeoPixel.h>
 #include "config.h"
 
 // GPIOs
 #define PIN_TOUCHSENSOR D0
 #define PIN_WATERSENSOR D5
 #define PIN_ONE_WIRE_BUS D6
+#define PIN_WS2812B D7
 #define PIN_LIGHTSENSOR A0
 
 // LCD
@@ -109,7 +112,7 @@ bool lastTimeSyncWasSuccessfull = 0; // Will store if last sync with NTP server 
 float tempSensorValues[NUM_SENSORS];
 
 // LCD Setup
-LiquidCrystal_I2C lcd(PCF8574_ADDR_A21_A11_A01, 4, 5, 6, 16, 11, 12, 13, 14, POSITIVE);
+LiquidCrystal_I2C lcd(PCF8574_ADDR_A20_A10_A00, 4, 5, 6, 16, 11, 12, 13, 14, POSITIVE);
 
 // Setup a oneWire instance to communicate with any OneWire devices (not just MLOCAL >>im/Dallas temperature ICs)
 OneWire oneWire(PIN_ONE_WIRE_BUS);
@@ -123,9 +126,33 @@ Adafruit_BME280 bme; // I2C
 // LCD Screen Switching
 Screens screen(3, SHOW_SCREEN_0_TIME, SHOW_SCREEN_1_TIME, SHOW_SCREEN_2_TIME);
 
+// Webserver
+ESP8266WebServer server(80);
+
+// Udpater
+ESP8266HTTPUpdateServer httpUpdater;
+
+// NeoPixel library
+Adafruit_NeoPixel pixels(1, PIN_WS2812B, NEO_GRB + NEO_KHZ800);
+
 // NTPCLient
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "europe.pool.ntp.org", 7200, 60000);
+
+// Colors
+#define COLOR_BRIGHTNESS 100
+#define COLOR_BLACK pixels.Color(0, 0, 0)
+#define COLOR_WIFI pixels.Color(0, 0, COLOR_BRIGHTNESS)
+#define COLOR_RED pixels.Color(COLOR_BRIGHTNESS, 0, 0)
+#define COLOR_OKAY pixels.Color(0, COLOR_BRIGHTNESS, 0)
+#define COLOR_TOUCH pixels.Color(COLOR_BRIGHTNESS, COLOR_BRIGHTNESS, COLOR_BRIGHTNESS)
+uint32_t lastStatus = COLOR_BLACK;
+
+void setStatus(uint32_t c)
+{
+  pixels.setPixelColor(0, c);
+  pixels.show();
+}
 
 long RSSI2Quality(long dBm)
 {
@@ -279,13 +306,13 @@ void printAddress(DeviceAddress deviceAddress)
 }
 
 // function to print a device address
-void printAddressForWeb(DeviceAddress deviceAddress, char *buffer)
+void printAddressForWeb(DeviceAddress deviceAddress, char *buffer, bool upperCase = false)
 {
   int8_t off = 0;
-  char out[16];
+  char out[17];
   for (int8_t i = 0; i < 8; i++)
   {
-    off += snprintf(out + off, sizeof(out) - off, "%02x", deviceAddress[i]);
+    off += snprintf(out + off, sizeof(out) - off, (upperCase ? "%02X" : "%02x"), deviceAddress[i]);
   }
   strcpy(buffer, out);
 }
@@ -305,81 +332,81 @@ void sendData()
   lcd.print(F("> syncing..."));
   lcd.blink();
 
-  // Allocate a temporary JsonDocument
-  // Use arduinojson.org/v6/assistant to compute the capacity.
-  StaticJsonDocument<500> jsondoc; //
-                                   // Add Temps
-  char addressBuffer[16];
-  JsonArray temps = jsondoc.createNestedArray("temps");
-  for (uint8_t i = 0; i < NUM_SENSORS; i++)
-  {
-    if (tempSensorValues[i] != DEVICE_DISCONNECTED_C)
-    {
-      printAddressForWeb(tempSensors[i], addressBuffer);
-      JsonObject temp = temps.createNestedObject();
-      temp[addressBuffer] = tempSensorValues[i];
-    }
-  }
-  JsonArray data = jsondoc.createNestedArray("data");
-  JsonObject jslight = data.createNestedObject();
-  jslight["light"] = analogRead(PIN_LIGHTSENSOR);
-  JsonObject jshighwater = data.createNestedObject();
-  jshighwater["highwater"] = highwater;
-  JsonObject jsuptime = data.createNestedObject();
-  jsuptime["uptime"] = millis();
+  // // Allocate a temporary JsonDocument
+  // // Use arduinojson.org/v6/assistant to compute the capacity.
+  // StaticJsonDocument<500> jsondoc; //
+  //                                  // Add Temps
+  // char addressBuffer[16];
+  // JsonArray temps = jsondoc.createNestedArray("temps");
+  // for (uint8_t i = 0; i < NUM_SENSORS; i++)
+  // {
+  //   if (tempSensorValues[i] != DEVICE_DISCONNECTED_C)
+  //   {
+  //     printAddressForWeb(tempSensors[i], addressBuffer);
+  //     JsonObject temp = temps.createNestedObject();
+  //     temp[addressBuffer] = tempSensorValues[i];
+  //   }
+  // }
+  // JsonArray data = jsondoc.createNestedArray("data");
+  // JsonObject jslight = data.createNestedObject();
+  // jslight["light"] = analogRead(PIN_LIGHTSENSOR);
+  // JsonObject jshighwater = data.createNestedObject();
+  // jshighwater["highwater"] = highwater;
+  // JsonObject jsuptime = data.createNestedObject();
+  // jsuptime["uptime"] = millis();
 
-  Serial.print(F("[sendData] Sending: "));
-  serializeJson(jsondoc, Serial);
-  Serial.println();
+  // Serial.print(F("[sendData] Sending: "));
+  // serializeJson(jsondoc, Serial);
+  // Serial.println();
 
-  char JSONmessageBuffer[500];
-  serializeJson(jsondoc, JSONmessageBuffer, sizeof(JSONmessageBuffer));
+  // char JSONmessageBuffer[500];
+  // serializeJson(jsondoc, JSONmessageBuffer, sizeof(JSONmessageBuffer));
 
-  std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure);
+  // std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure);
 
-  client->setInsecure(); //client->setFingerprint(fingerprint);
+  // client->setInsecure(); //client->setFingerprint(fingerprint);
 
-  HTTPClient https;
+  // HTTPClient https;
 
-  Serial.print("[sendData] HTTPS Client begin...\n");
+  // Serial.print("[sendData] HTTPS Client begin...\n");
 
-  if (https.begin(*client, API_URL))
-  { // HTTPS
+  // if (https.begin(*client, API_URL))
+  // { // HTTPS
 
-    https.addHeader("Content-Type:", "application/json"); // Add Header
-    https.addHeader("X-API-Key:", API_KEY);               // Add Header
+  //   https.addHeader("Content-Type:", "application/json"); // Add Header
+  //   https.addHeader("X-API-Key:", API_KEY);               // Add Header
 
-    Serial.print("[sendData] HTTP POST data...\n");
-    // start connection and send HTTP header
-    int httpCode = https.POST(JSONmessageBuffer); // Send the request
+  //   Serial.print("[sendData] HTTP POST data...\n");
+  //   // start connection and send HTTP header
+  //   int httpCode = https.POST(JSONmessageBuffer); // Send the request
 
-    // httpCode will be negative on error
-    if (httpCode > 0)
-    {
-      // HTTP header has been send and Server response header has been handled
-      Serial.printf("[sendData] HTTP Code: %d\n", httpCode);
+  //   // httpCode will be negative on error
+  //   if (httpCode > 0)
+  //   {
+  //     // HTTP header has been send and Server response header has been handled
+  //     Serial.printf("[sendData] HTTP Code: %d\n", httpCode);
 
-      // file found at server
-      if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY)
-      {
-        failed = false;
+  //     // file found at server
+  //     if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY)
+  //     {
+  //       failed = false;
 
-        /*Serial.print("[sendData] HTTP Payload: ");
-        String payload = https.getString();
-        Serial.println(payload);*/
-      }
-    }
-    else
-    {
-      Serial.printf("[sendData] HTTP POST... failed, error: %s\n", https.errorToString(httpCode).c_str());
-    }
+  //       /*Serial.print("[sendData] HTTP Payload: ");
+  //       String payload = https.getString();
+  //       Serial.println(payload);*/
+  //     }
+  //   }
+  //   else
+  //   {
+  //     Serial.printf("[sendData] HTTP POST... failed, error: %s\n", https.errorToString(httpCode).c_str());
+  //   }
 
-    https.end();
-  }
-  else
-  {
-    Serial.printf("[sendData] HTTP Unable to connect\n");
-  }
+  //   https.end();
+  // }
+  // else
+  // {
+  //   Serial.printf("[sendData] HTTP Unable to connect\n");
+  // }
 
   if (!failed)
   {
@@ -409,7 +436,7 @@ void lcdPrintTemp(float temp)
   }
   else
   {
-    lcd.print(temp);
+    lcd.printf("%5.1f", temp);
     lcd.write(1);
     lcd.print(F("C"));
   }
@@ -438,11 +465,11 @@ void lcdShow()
       }
       lcdPrintHeader();
       lcd.setCursor(13, 1);
-      lcdPrintTemp(tempSensorValues[0]);
+      lcdPrintTemp(tempSensorValues[SENSOR_Wasser]);
       lcd.setCursor(13, 2);
-      lcdPrintTemp(tempSensorValues[1]);
+      lcdPrintTemp(tempSensorValues[SENSOR_Solar]);
       lcd.setCursor(13, 3);
-      lcdPrintTemp(tempSensorValues[3]);
+      lcdPrintTemp(tempSensorValues[SENSOR_Luft]);
     }
     else if (screen.currentScreen() == 1)
     {
@@ -451,19 +478,24 @@ void lcdShow()
         lcd.clear();
         lcdPrintHeader();
         lcd.setCursor(0, 1);
-        lcd.print(F("Sensors:"));
-        lcd.setCursor(0, 2);
-        lcd.print(F("Uptime:"));
-        lcd.setCursor(0, 3);
         lcd.print(F("SysTemp:"));
+        lcd.setCursor(0, 2);
+        lcd.print(F("Humi:"));
+        lcd.setCursor(0, 3);
+        lcd.print(F("Press:"));
       }
       lcdPrintHeader();
-      lcd.setCursor(15, 1);
-      lcd.printf("%02d/%02d", numSensorsFound, NUM_SENSORS);
-      lcd.setCursor(8, 2);
-      lcdPrintFormatedTime(millis(), false);
-      lcd.setCursor(13, 3);
-      lcdPrintTemp(tempSensorValues[4]);
+      lcd.setCursor(14, 1);
+      //lcd.print(bme.readTemperature());
+      lcd.printf("%4.1f", bme.readTemperature());
+      lcd.write(1);
+      lcd.print(F("C"));
+
+      lcd.setCursor(14, 2);
+      lcd.printf("%5.1f%%", bme.readHumidity());
+
+      lcd.setCursor(9, 3);
+      lcd.printf("%7.1f hPa", (bme.readPressure() / 100.0F));
     }
     else if (screen.currentScreen() == 2)
     {
@@ -472,19 +504,21 @@ void lcdShow()
         lcd.clear();
         lcdPrintHeader();
         lcd.setCursor(0, 1);
-        lcd.print(F("Upload:"));
+        lcd.print(F("Uptime:"));
         lcd.setCursor(0, 2);
-        lcd.print(F("WiFi Signal:"));
+        lcd.print(F("Upload:"));
         lcd.setCursor(0, 3);
-        lcd.print(F("IP:"));
+        lcd.print(F("WiFi Signal:"));
       }
       lcdPrintHeader();
-      lcd.setCursor(13, 1);
+      lcd.setCursor(8, 1);
+      lcdPrintFormatedTime(millis(), false);
+
+      lcd.setCursor(13, 2);
       lcdPrintFormatedTime((lastSendData + SENDDATA_INTERVAL) - millis(), true);
-      lcd.setCursor(16, 2);
+
+      lcd.setCursor(16, 3);
       lcd.printf("%3ld%%", RSSI2Quality(WiFi.RSSI()));
-      lcd.setCursor((20 - WiFi.localIP().toString().length()), 3);
-      lcd.print(WiFi.localIP());
     }
   }
 }
@@ -525,6 +559,7 @@ void handleButton()
     if (inp != previousButtonState)
     {
       Serial.print("[handleButton] Button pressed short\n");
+      //setStatus(COLOR_TOUCH);
       buttonTimer = millis();
       screen.nextScreen();
       Serial.printf("[handleButton] Current screen: %i\n", screen.currentScreen());
@@ -538,11 +573,16 @@ void handleButton()
     // Delay a little bit to avoid bouncing
     delay(50);
   }
+  else
+  {
+    //setStatus(lastStatus);
+  }
   previousButtonState = inp;
 }
 
 void wifiConnect()
 {
+  bool led = false;
   lcd.clear();
   lcdPrintHeader();
   lcd.setCursor(0, 1);
@@ -561,6 +601,17 @@ void wifiConnect()
   {
     delay(250);
     Serial.print(".");
+    if (led)
+    {
+      setStatus(COLOR_BLACK);
+      led = false;
+    }
+    else
+    {
+      setStatus(COLOR_WIFI);
+      led = true;
+    }
+    pixels.show();
 
     // handleButton
     handleButton();
@@ -580,13 +631,94 @@ void wifiConnect()
   lcd.print(WiFi.gatewayIP());
 
   Serial.println();
-  Serial.print("[wifiConnect] WiFi connected with IP: ");
+  Serial.println("[wifiConnect] WiFi connected!");
+  Serial.print("> IP: ");
   Serial.println(WiFi.localIP());
-  Serial.print("[wifiConnect] WiFi Diag:\n");
+  Serial.print("> Subnetmask: ");
+  Serial.println(WiFi.subnetMask());
+  Serial.print("> GW: ");
+  Serial.println(WiFi.gatewayIP());
+  Serial.print("> DNS: ");
+  Serial.println(WiFi.dnsIP());
+  Serial.print("> WiFi Diag:\n");
   WiFi.printDiag(Serial);
   Serial.println();
   delay(1000);
   screen.reset();
+}
+
+void handleRoot()
+{
+  char buffer[50];
+
+  Serial.println("[handleRoot] Webserver access");
+  String message = "Hello from LakeTemp!<br /><br />";
+  message += "Last Reset Reason: ";
+  message += ESP.getResetReason();
+  message += "<br /><br />";
+  message += "<a href=\"/update\">Update FW</a><br /><br />";
+
+  message += "OneWire Sensors:<br >";
+
+  uint8_t total = sensors.getDeviceCount();
+
+  for (uint8_t i = 0; i < total; i++)
+  {
+    message += "<pre>";
+    snprintf(buffer, 50, "%d/%d: ", i + 1, total);
+    message += buffer;
+
+    DeviceAddress deviceAddress;
+    if (sensors.getAddress(deviceAddress, i))
+    {
+
+      printAddressForWeb(deviceAddress, buffer, true);
+      message += buffer;
+      message += " (";
+      snprintf(buffer, 50, "%.1f", sensors.getTempCByIndex(i));
+      message += buffer;
+      message += " &deg;C)";
+    }
+    else
+    {
+      message += "no adress!";
+    }
+    message += "</pre>";
+  }
+  message += "<br >";
+  message += "BME Sensor:<br >";
+
+  message += "Temperature: ";
+  message += bme.readTemperature();
+  message += " &deg;C<br />";
+
+  message += "Pressure: ";
+  message += (bme.readPressure() / 100.0F);
+  message += " hPa<br />";
+
+  message += "Humidity: ";
+  message += bme.readHumidity();
+  message += " %";
+
+  server.send(200, "text/html", message);
+}
+
+void handleNotFound()
+{
+  Serial.println("[handleNotFound] Webserver access");
+  String message = "File Not Found\n\n";
+  message += "URI: ";
+  message += server.uri();
+  message += "\nMethod: ";
+  message += (server.method() == HTTP_GET) ? "GET" : "POST";
+  message += "\nArguments: ";
+  message += server.args();
+  message += "\n";
+  for (uint8_t i = 0; i < server.args(); i++)
+  {
+    message += " " + server.argName(i) + ": " + server.arg(i) + "\n";
+  }
+  server.send(404, "text/plain", message);
 }
 
 void setup(void)
@@ -604,8 +736,13 @@ void setup(void)
   pinMode(PIN_TOUCHSENSOR, INPUT);
   pinMode(PIN_WATERSENSOR, INPUT);
 
+  // NeoPixel
+  pixels.begin();
+  pixels.clear();
+  setStatus(COLOR_RED);
+
   // BME Begin
-  // status = bme.begin(0x76, &Wire2)
+  Serial.println("[setup] Searching BME280 sensor...");
   if (!bme.begin(BME280_ADDRESS_ALTERNATE))
   {
     Serial.println("Could not find a valid BME280 sensor, check wiring, address, sensor ID!");
@@ -614,22 +751,24 @@ void setup(void)
   }
   else
   {
-    Serial.println("Found valid BME280 sensor!");
-    Serial.print("Temperature = ");
+    Serial.println("[setup] Found valid BME280 sensor!");
+    Serial.print("> Temperature = ");
     Serial.print(bme.readTemperature());
     Serial.println(" °C");
 
-    Serial.print("Pressure = ");
-
+    Serial.print("> Pressure = ");
     Serial.print(bme.readPressure() / 100.0F);
     Serial.println(" hPa");
 
-    Serial.print("Humidity = ");
+    Serial.print("> Humidity = ");
     Serial.print(bme.readHumidity());
     Serial.println(" %");
-
-    Serial.println();
   }
+
+  // OneWire
+  Serial.println("[setup] Searching OneWire sensors...");
+  sensors.begin();
+  listSensors();
 
   // LCD begin
   while (lcd.begin(LCD_COLUMS, LCD_ROWS) != 1)
@@ -637,6 +776,8 @@ void setup(void)
     Serial.println(F("[setup] PCF8574 is not connected or lcd pins declaration is wrong. Only pins numbers: 4,5,6,16,11,12,13,14 are legal."));
     delay(5000);
   }
+
+  Serial.println(F("[setup] PCF8574 connected!"));
 
   lcd.createChar(0, Eszett);
   lcd.createChar(1, Degree);
@@ -660,35 +801,41 @@ void setup(void)
   lcd.write(2);
   lcd.print(F(" Fabian Otto "));
 
-  lcd.backlight();
-  delay(500);
-  lcd.noBacklight();
-  delay(500);
-  lcd.backlight();
-  delay(500);
-  lcd.noBacklight();
-  delay(500);
-  lcd.backlight();
-  delay(500);
-  lcd.noBacklight();
-  delay(500);
-  lcd.backlight();
-  delay(500);
-  lcd.noBacklight();
-  delay(500);
-  lcd.backlight();
-
-  delay(2000);
+  // lcd.backlight();
+  // delay(500);
+  // lcd.noBacklight();
+  // delay(500);
+  // lcd.backlight();
+  // delay(500);
+  // lcd.noBacklight();
+  // delay(500);
+  // lcd.backlight();
+  // delay(500);
+  // lcd.noBacklight();
+  // delay(500);
+  // lcd.backlight();
+  // delay(500);
+  // lcd.noBacklight();
+  // delay(500);
+  // lcd.backlight();
 
   // Wifi connect
   wifiConnect();
+  delay(1000);
 
   // NTPCLient
   timeClient.begin();
 
-  // tempSensors
-  sensors.begin();
-  listSensors();
+  // Arduino OTA Update
+  httpUpdater.setup(&server);
+
+  // Webserver
+  server.on("/", handleRoot);
+  server.onNotFound(handleNotFound);
+  server.begin();
+
+  // Setup complete
+  setStatus(COLOR_OKAY);
 }
 
 void loop()
@@ -698,6 +845,9 @@ void loop()
 
   // handleButton
   handleButton();
+
+  // Webserver
+  server.handleClient();
 
   // Get temperatures from one wire sensors and waterlevel every x seconds
   if (millis() - lastSensorVals > REQ_SENSOR_INTERVAL || lastSensorVals == 0)
