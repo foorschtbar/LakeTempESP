@@ -17,7 +17,6 @@
 #include <Adafruit_NeoPixel.h>
 #include <LittleFS.h>
 #include <WiFiManager.h>
-#include <Ticker.h>
 #include "config.h"
 
 // ++++++++++++++++++++++++++++++++++++++++
@@ -40,8 +39,8 @@
 
 // Other
 #define MAX_NUM_SENSORS 10
-#define HOSTNAME "LakeTempESP"
-
+#define RESET_COUNTDOWN 5 // How long the button needs to be pressed at startup to reset to factory defaults. Warning: Touchsensors goes to low after approx 5s continous pressing!
+#define REFRESH_TIME 20   // After this time in sec pages refreshes
 // Constatns
 const int SHOW_SCREEN_0_TIME = 30;       // How long screen #1 are shown
 const int SHOW_SCREEN_1_TIME = 5;        // How long screen #2 are shown
@@ -121,6 +120,13 @@ const uint8_t Heart2[8] = {
 //
 // ++++++++++++++++++++++++++++++++++++++++
 
+enum class UploadStatus
+{
+  uplUnknown,
+  uplSuccess,
+  uplFailed
+};
+
 // ++++++++++++++++++++++++++++++++++++++++
 //
 // LIBS
@@ -153,13 +159,7 @@ Adafruit_NeoPixel pixels(1, PIN_WS2812B, NEO_GRB + NEO_KHZ800);
 
 // NTPCLient
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "europe.pool.ntp.org", 7200, 60000);
-
-// WiFi Manager
-WiFiManager wifiManager;
-
-// WiFi connection ticker
-Ticker ticker;
+NTPClient timeClient(ntpUDP);
 
 // ++++++++++++++++++++++++++++++++++++++++
 //
@@ -172,27 +172,33 @@ String html;
 char buff[255];
 
 // Variables will change
-uint8_t highwater = 0;
-unsigned long lastSendData = 0;                     // erster Upload nach 1er Minute (Damit wird currentMillis unten im loop hochgesetzt ('-' + '-' denn gibt plus!)
-unsigned long lastSensorVals = 0;                   // will store last time temps and water was updated
-unsigned long buttonTimer = 0;                      // will store how long button was pressed
-uint8_t numSensorsFound = 0;                        // number of oneWire sensors
-bool previousButtonState = 1;                       // will store last Button state. 1 = unpressed, 0 = pressed
-bool lastTimeSyncWasSuccessfull = 0;                // Will store if last sync with NTP server was okay
-float tempSensorValues[MAX_NUM_SENSORS];            // will store temp sensor values
-DeviceAddress tempSensorAddresses[MAX_NUM_SENSORS]; // will store temp sensor addresses
-bool shouldSaveConfig = false;
+uint8_t highwater = 0;                                //
+bool forceSendData = true;                            //
+unsigned long lastSendData = 0;                       //
+unsigned long lastSensorVals = 0;                     // will store last time temps and water was updated
+unsigned long buttonTimer = 0;                        // will store how long button was pressed
+uint8_t numSensorsFound = 0;                          // number of oneWire sensors
+bool previousButtonState = 1;                         // will store last Button state. 1 = unpressed, 0 = pressed
+bool lastTimeSyncWasSuccessfull = 0;                  // Will store if last sync with NTP server was okay
+float tempSensorValues[MAX_NUM_SENSORS];              // will store temp sensor values
+DeviceAddress tempSensorAddresses[MAX_NUM_SENSORS];   // will store temp sensor addresses
+UploadStatus uploadStatus = UploadStatus::uplUnknown; //
 
 typedef struct
 {
-  String apiUrl;
-  String apiKey;
+  String hostname = "LakeTempESP";
+  String ssid = "";
+  String psk = "";
+  String apiUrl = "";
+  String apiKey = "";
   String username = "admin";
   String password = "admin";
-  String note;
+  String ntpserver = "europe.pool.ntp.org";
+  String note = "";
   int sensorIdxWater = 0;
   int sensorIdxSolar = 0;
   int sensorIdxAir = 0;
+  int timeoffset = 7200;
 } configData_t;
 configData_t cfg;
 
@@ -212,6 +218,22 @@ void HTMLHeader(const char section[], unsigned int refresh = 0, const char url[]
 // MAIN CODE
 //
 // ++++++++++++++++++++++++++++++++++++++++
+
+String getUploadStatus()
+{
+  if (uploadStatus == UploadStatus::uplSuccess)
+  {
+    return "Success";
+  }
+  else if (uploadStatus == UploadStatus::uplFailed)
+  {
+    return "Failed";
+  }
+  else
+  {
+    return "Unknown";
+  }
+}
 
 void showWEBAction()
 {
@@ -312,7 +334,12 @@ void HTMLHeader(const char *section, unsigned int refresh, const char *url)
   html += "background: #EDEDED;\n";
   html += "}";
 
-  html += "input[type=\"submit\"] {\n";
+  html += "code {\n";
+  html += "font-family : courier, courier new, serif;\n";
+  html += "font-size: large;\n";
+  html += "}";
+
+  html += "input[type=\"submit\"], button {\n";
   html += "background-color: #333;\n";
   html += "border: none;\n";
   html += "color: white;\n";
@@ -325,13 +352,19 @@ void HTMLHeader(const char *section, unsigned int refresh, const char *url)
   html += "cursor: pointer;\n";
   html += "}\n";
 
-  html += "input[type=\"submit\"]:hover {\n";
+  html += "input[type=\"submit\"]:hover, button:hover {\n";
   html += "background-color:#4e4e4e;\n";
   html += "}\n";
 
-  html += "input[type=\"submit\"]:disabled {\n";
+  html += "input[type=\"submit\"]:disabled, button:disabled {\n";
   html += "opacity: 0.6;\n";
   html += "cursor: not-allowed;\n";
+  html += "}\n";
+
+  html += ".inline {\n";
+  html += "font-size: 10px !important;\n";
+  html += "margin: 0 0 0 10px !important;\n";
+  html += "vertical-align: middle ;\n";
   html += "}\n";
 
   html += "</style>\n";
@@ -343,8 +376,8 @@ void HTMLHeader(const char *section, unsigned int refresh, const char *url)
   html += "<ul>\n";
   html += "<li><a href='/'>Home</a></li>\n";
   html += "<li><a href='/settings'>Settings</a></li>\n";
+  html += "<li><a href='/wifiscan'>WiFi Scan</a></li>\n";
   html += "<li><a href='/fwupdate'>FW Update</a></li>\n";
-  html += "<li><a href='/reset'>Factory reset</a></li>\n";
   html += "<li><a href='/reboot'>Reboot</a></li>\n";
   html += "</ul>\n";
   html += "<div id='main'>";
@@ -362,13 +395,25 @@ void HTMLFooter()
   html += "</html>\n";
 }
 
-void SaveConfigCallback()
-{
-  shouldSaveConfig = true;
-}
-
 void SetConfigVars(DynamicJsonDocument &json)
 {
+  if (json.containsKey("ssid"))
+  {
+    cfg.ssid = json["ssid"].as<char *>();
+  }
+
+  if (json.containsKey("psk"))
+  {
+    cfg.psk = json["psk"].as<char *>();
+  }
+
+  if (json.containsKey("hostname"))
+  {
+    if (!json["hostname"].as<String>().isEmpty())
+    {
+      cfg.hostname = json["hostname"].as<String>();
+    }
+  }
 
   if (json.containsKey("sensorIdxAir"))
   {
@@ -409,29 +454,42 @@ void SetConfigVars(DynamicJsonDocument &json)
   {
     cfg.note = json["note"].as<char *>();
   }
+
+  if (json.containsKey("ntpserver"))
+  {
+    cfg.ntpserver = json["ntpserver"].as<char *>();
+  }
+
+  if (json.containsKey("timeoffset"))
+  {
+    cfg.timeoffset = json["timeoffset"].as<int>();
+  }
 }
 
 void SaveConfig()
 {
   //save the custom parameters to FS
-  if (shouldSaveConfig)
-  {
-    DynamicJsonDocument json(1024);
-    json["apiKey"] = cfg.apiKey;
-    json["apiUrl"] = cfg.apiUrl;
-    json["note"] = cfg.note;
-    json["password"] = cfg.password;
-    json["username"] = cfg.username;
-    json["sensorIdxAir"] = cfg.sensorIdxAir;
-    json["sensorIdxSolar"] = cfg.sensorIdxSolar;
-    json["sensorIdxWater"] = cfg.sensorIdxWater;
 
-    File configFile = LittleFS.open("/config.json", "w");
-    serializeJson(json, configFile);
-    configFile.close();
-    Serial.println("[SaveConfig] Saved");
-    //end save
-  }
+  DynamicJsonDocument json(1024);
+  json["hostname"] = cfg.hostname;
+  json["ssid"] = cfg.ssid;
+  json["psk"] = cfg.psk;
+  json["apiKey"] = cfg.apiKey;
+  json["apiUrl"] = cfg.apiUrl;
+  json["note"] = cfg.note;
+  json["ntpserver"] = cfg.ntpserver;
+  json["timeoffset"] = cfg.timeoffset;
+  json["password"] = cfg.password;
+  json["username"] = cfg.username;
+  json["sensorIdxAir"] = cfg.sensorIdxAir;
+  json["sensorIdxSolar"] = cfg.sensorIdxSolar;
+  json["sensorIdxWater"] = cfg.sensorIdxWater;
+
+  File configFile = LittleFS.open("/config.json", "w");
+  serializeJson(json, configFile);
+  configFile.close();
+  Serial.println("[SaveConfig] Saved");
+  //end save
 }
 
 void LoadConfig()
@@ -463,7 +521,6 @@ void LoadConfig()
   else
   {
     Serial.println("[LoadConfig] No Configfile, init new file");
-    SaveConfigCallback();
     SaveConfig();
   }
 }
@@ -478,7 +535,7 @@ void resetSettings()
   }
   configFile.println("");
   configFile.close();
-  wifiManager.resetSettings();
+  delay(300);
   ESP.restart();
   delay(300);
 }
@@ -487,6 +544,18 @@ void setStatus(uint32_t c)
 {
   pixels.setPixelColor(0, c);
   pixels.show();
+}
+
+void setStatusToggle(uint32_t c1, uint32_t c2 = COLOR_BLACK)
+{
+  static bool last;
+
+  if (last)
+    setStatus(c1);
+  else
+    setStatus(c2);
+
+  last = !last;
 }
 
 long dBm2Quality(long dBm)
@@ -696,103 +765,117 @@ void sendData()
   lcd.clear();
   lcdPrintHeader();
   lcd.setCursor(0, 1);
-  lcd.print(F("> Upload data"));
-  lcd.setCursor(0, 2);
-  lcd.print(F("> syncing..."));
+  lcd.print(F("> Upload data..."));
   lcd.blink();
 
-  // // Allocate a temporary JsonDocument
-  // // Use arduinojson.org/v6/assistant to compute the capacity.
-  // StaticJsonDocument<500> jsondoc; //
-  //                                  // Add Temps
-  // char addressBuffer[16];
-  // JsonArray temps = jsondoc.createNestedArray("temps");
-  // for (uint8_t i = 0; i < NUM_SENSORS; i++)
-  // {
-  //   if (tempSensorValues[i] != DEVICE_DISCONNECTED_C)
-  //   {
-  //     printAddressForWeb(tempSensors[i], addressBuffer);
-  //     JsonObject temp = temps.createNestedObject();
-  //     temp[addressBuffer] = tempSensorValues[i];
-  //   }
-  // }
-  // JsonArray data = jsondoc.createNestedArray("data");
-  // JsonObject jslight = data.createNestedObject();
-  // jslight["light"] = analogRead(PIN_LIGHTSENSOR);
-  // JsonObject jshighwater = data.createNestedObject();
-  // jshighwater["highwater"] = highwater;
-  // JsonObject jsuptime = data.createNestedObject();
-  // jsuptime["uptime"] = millis();
+  // Allocate a temporary JsonDocument
+  // Use arduinojson.org/v6/assistant to compute the capacity.
+  StaticJsonDocument<500> jsondoc; //
 
-  // Serial.print(F("[sendData] Sending: "));
-  // serializeJson(jsondoc, Serial);
-  // Serial.println();
+  jsondoc["hostname"] = WiFi.hostname();
+  jsondoc["firmware"] = FIRMWARE_VERSION;
+  jsondoc["timestamp"] = timeClient.getEpochTime();
+  jsondoc["wifi_rssi"] = WiFi.RSSI();
+  jsondoc["light"] = analogRead(PIN_LIGHTSENSOR);
+  jsondoc["highwater"] = highwater;
+  jsondoc["uptime"] = millis();
+  jsondoc["mac"] = WiFi.macAddress();
 
-  // char JSONmessageBuffer[500];
-  // serializeJson(jsondoc, JSONmessageBuffer, sizeof(JSONmessageBuffer));
+  // Add Temps
+  char addressBuffer[16];
+  JsonObject temps = jsondoc.createNestedObject("temps");
+  for (uint8_t i = 0; i < numSensorsFound; i++)
+  {
+    if (tempSensorValues[i] != DEVICE_DISCONNECTED_C)
+    {
+      printAddressForWeb(tempSensorAddresses[i], addressBuffer);
+      temps[addressBuffer] = tempSensorValues[i];
+    }
+  }
 
-  // std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure);
+  yield();
 
-  // client->setInsecure(); //client->setFingerprint(fingerprint);
+  Serial.print(F("[sendData] Sending: "));
+  serializeJson(jsondoc, Serial);
+  Serial.println();
 
-  // HTTPClient https;
+  char JSONmessageBuffer[500];
+  serializeJson(jsondoc, JSONmessageBuffer, sizeof(JSONmessageBuffer));
 
-  // Serial.print("[sendData] HTTPS Client begin...\n");
+  std::unique_ptr<BearSSL::WiFiClientSecure> client(new BearSSL::WiFiClientSecure);
 
-  // if (https.begin(*client, API_URL))
-  // { // HTTPS
+  client->setInsecure(); //client->setFingerprint(fingerprint);
 
-  //   https.addHeader("Content-Type:", "application/json"); // Add Header
-  //   https.addHeader("X-API-Key:", API_KEY);               // Add Header
+  HTTPClient https;
 
-  //   Serial.print("[sendData] HTTP POST data...\n");
-  //   // start connection and send HTTP header
-  //   int httpCode = https.POST(JSONmessageBuffer); // Send the request
+  Serial.print("[sendData] HTTPS Client begin...\n");
 
-  //   // httpCode will be negative on error
-  //   if (httpCode > 0)
-  //   {
-  //     // HTTP header has been send and Server response header has been handled
-  //     Serial.printf("[sendData] HTTP Code: %d\n", httpCode);
+  setStatus(COLOR_WIFI);
 
-  //     // file found at server
-  //     if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY)
-  //     {
-  //       failed = false;
+  if (https.begin(*client, cfg.apiUrl))
+  { // HTTPS
 
-  //       /*Serial.print("[sendData] HTTP Payload: ");
-  //       String payload = https.getString();
-  //       Serial.println(payload);*/
-  //     }
-  //   }
-  //   else
-  //   {
-  //     Serial.printf("[sendData] HTTP POST... failed, error: %s\n", https.errorToString(httpCode).c_str());
-  //   }
+    https.addHeader("Content-Type", "application/json"); // Add Header
+    https.addHeader("X-API-Key", cfg.apiKey);            // Add Header
 
-  //   https.end();
-  // }
-  // else
-  // {
-  //   Serial.printf("[sendData] HTTP Unable to connect\n");
-  // }
+    Serial.print("[sendData] HTTP POST data...\n");
+    // start connection and send HTTP header
+    int httpCode = https.POST(JSONmessageBuffer); // Send the request
+
+    yield();
+
+    // httpCode will be negative on error
+    if (httpCode > 0)
+    {
+      // HTTP header has been send and Server response header has been handled
+      Serial.printf("[sendData] HTTP Code: %d\n", httpCode);
+
+      // file found at server
+      if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY)
+      {
+        failed = false;
+
+        /*Serial.print("[sendData] HTTP Payload: ");
+        String payload = https.getString();
+        Serial.println(payload);*/
+      }
+    }
+    else
+    {
+      Serial.printf("[sendData] HTTP POST... failed, error: %s\n", https.errorToString(httpCode).c_str());
+    }
+
+    https.end();
+  }
+  else
+  {
+    Serial.printf("[sendData] HTTP Unable to connect\n");
+  }
 
   if (!failed)
   {
+    setStatus(COLOR_OKAY);
     lcd.noBlink();
     lcd.setCursor(0, 2);
     lcd.print(F("> synced!        "));
     delay(1000);
     screen.reset();
+    uploadStatus = UploadStatus::uplSuccess;
   }
   else
   {
+    setStatus(COLOR_RED);
     lcd.noBlink();
     lcd.setCursor(0, 2);
     lcd.print(F("> failed!        "));
     delay(1000);
     screen.reset();
+    uploadStatus = UploadStatus::uplFailed;
+    setStatus(COLOR_RED);
   }
+
+  lastSendData = millis();
+  forceSendData = false;
 }
 
 void lcdPrintTemp(float temp)
@@ -921,104 +1004,87 @@ void handleButton()
   previousButtonState = inp;
 }
 
-void tick()
-{
-  if (lastLEDStatus != COLOR_BLACK)
-  {
-    setStatus(COLOR_BLACK);
-    lastLEDStatus = COLOR_BLACK;
-  }
-  else
-  {
-    setStatus(COLOR_WIFI);
-    lastLEDStatus = COLOR_WIFI;
-  }
-}
-
-void EnteredHotspotCallback(WiFiManager *manager)
-{
-  Serial.println("[EnteredHotspotCallback] No WiFi config! Hotspot enabled");
-
-  ticker.attach(0.2, tick);
-
-  lcd.clear();
-  lcdPrintHeader();
-  lcd.setCursor(0, 1);
-  lcd.print(F("> No WiFi config!"));
-  lcd.setCursor(0, 2);
-  lcd.print(F("> Hotspot Mode"));
-  lcd.setCursor(15, 2);
-  lcd.blink();
-}
-
 void wifiConnect()
 {
 
-  // Begin Wifi
-  Serial.print("[wifiConnect] Connecting to WiFi");
+  WiFi.mode(WIFI_OFF);
 
-  lcd.clear();
-  lcdPrintHeader();
-  lcd.setCursor(0, 1);
-  lcd.print(F("> Connecting to"));
-  lcd.setCursor(0, 2);
-  lcd.print(F("> WiFi Network..."));
-  lcd.blink();
-
-  setStatus(COLOR_WIFI);
-  ticker.attach(0.6, tick);
-
-  WiFi.hostname(HOSTNAME);
-
-  // Set config save notify callback
-  wifiManager.setSaveConfigCallback(SaveConfigCallback);
-  wifiManager.setAPCallback(EnteredHotspotCallback);
-  // Config menue timeout 180 seconds.
-  //wifiManager.setConfigPortalTimeout(180);
-
-  if ((digitalRead(PIN_TOUCHSENSOR) && !wifiManager.startConfigPortal(HOSTNAME)) || !wifiManager.autoConnect(HOSTNAME))
+  // AP or Infrastructire mode
+  if (cfg.ssid.isEmpty())
   {
-    Serial.println("[wifiConnect] Wifi failed to connect and hit timeout");
-    delay(3000);
-    // Reset and try again, or maybe put it to deep sleep
-    ESP.restart();
-    delay(5000);
+    // Start AP
+    Serial.println(F("[wifiConnect] Default Config loaded."));
+    Serial.println(F("[wifiConnect] Starting WiFi SoftAP"));
+    WiFi.softAP("LakeTempESP", "");
+    setStatus(COLOR_WIFI);
+
+    lcd.clear();
+    lcdPrintHeader();
+    lcd.setCursor(0, 1);
+    lcd.print(F("> No WiFi config!"));
+    lcd.setCursor(0, 2);
+    lcd.print(F("> Hotspot Mode..."));
+    lcd.setCursor(17, 2);
+    lcd.blink();
   }
+  else
+  {
 
-  SaveConfig();
+    Serial.printf("[wifiConnect] Connecing to '%s'. Please wait", cfg.ssid.c_str());
 
-  lcd.noBlink();
-  lcd.clear();
-  lcdPrintHeader();
-  lcd.setCursor(0, 1);
-  lcd.print(F("WiFi connected!"));
-  lcd.setCursor(0, 2);
-  lcd.print(F("IP: "));
-  lcd.setCursor(4, 2);
-  lcd.print(WiFi.localIP());
-  lcd.setCursor(0, 4);
-  lcd.print(F("GW: "));
-  lcd.setCursor(4, 4);
-  lcd.print(WiFi.gatewayIP());
+    lcd.clear();
+    lcdPrintHeader();
+    lcd.setCursor(0, 1);
+    lcd.print(F("> Connecting to"));
+    lcd.setCursor(0, 2);
+    lcd.print(F("> WiFi Network..."));
+    lcd.blink();
 
-  Serial.println();
-  Serial.println("[wifiConnect] WiFi connected!");
-  Serial.print("> IP: ");
-  Serial.println(WiFi.localIP());
-  Serial.print("> Subnetmask: ");
-  Serial.println(WiFi.subnetMask());
-  Serial.print("> GW: ");
-  Serial.println(WiFi.gatewayIP());
-  Serial.print("> DNS: ");
-  Serial.println(WiFi.dnsIP());
-  Serial.print("> WiFi Diag:\n");
-  WiFi.printDiag(Serial);
-  Serial.println();
-  delay(1000);
-  screen.reset();
+    setStatus(COLOR_WIFI);
 
-  setStatus(COLOR_BLACK);
-  ticker.detach();
+    WiFi.mode(WIFI_STA);
+    WiFi.hostname(cfg.hostname);
+    WiFi.begin(cfg.ssid, cfg.psk);
+
+    // Wait for connection
+    while (WiFi.status() != WL_CONNECTED)
+    {
+      delay(250);
+      Serial.print(F("."));
+      setStatusToggle(COLOR_WIFI);
+    }
+    setStatus(COLOR_WIFI);
+
+    lcd.noBlink();
+    lcd.clear();
+    lcdPrintHeader();
+    lcd.setCursor(0, 1);
+    lcd.print(F("WiFi connected!"));
+    lcd.setCursor(0, 2);
+    lcd.print(F("IP: "));
+    lcd.setCursor(4, 2);
+    lcd.print(WiFi.localIP());
+    lcd.setCursor(0, 4);
+    lcd.print(F("GW: "));
+    lcd.setCursor(4, 4);
+    lcd.print(WiFi.gatewayIP());
+
+    Serial.println();
+    Serial.println("[wifiConnect] WiFi connected!");
+    Serial.print("> IP: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("> Subnetmask: ");
+    Serial.println(WiFi.subnetMask());
+    Serial.print("> GW: ");
+    Serial.println(WiFi.gatewayIP());
+    Serial.print("> DNS: ");
+    Serial.println(WiFi.dnsIP());
+    Serial.print("> WiFi Diag:\n");
+    WiFi.printDiag(Serial);
+    Serial.println();
+    delay(1000);
+    screen.reset();
+  }
 }
 
 void handleFWUpdate()
@@ -1055,6 +1121,92 @@ void handleFWUpdate()
   }
 }
 
+void handleWiFiScan()
+{
+  showWEBAction();
+  if (!server.authenticate(cfg.username.c_str(), cfg.password.c_str()))
+  {
+    return server.requestAuthentication();
+  }
+  else
+  {
+
+    HTMLHeader("WiFi Scan");
+
+    int n = WiFi.scanNetworks();
+    if (n == 0)
+    {
+      html += "No networks found.\n";
+    }
+    else
+    {
+      html += "<table>\n";
+      html += "<tr>\n";
+      html += "<th>#</th>\n";
+      html += "<th>SSID</th>\n";
+      html += "<th>Channel</th>\n";
+      html += "<th>Signal</th>\n";
+      html += "<th>RSSI</th>\n";
+      html += "<th>Encryption</th>\n";
+      html += "<th>BSSID</th>\n";
+      html += "</tr>\n";
+      for (int i = 0; i < n; ++i)
+      {
+        html += "<tr>\n";
+        snprintf(buff, sizeof(buff), "%02d", (i + 1));
+        html += String("<td>") + buff + String("</td>");
+        html += "<td>\n";
+        if (WiFi.isHidden(i))
+        {
+          html += "[hidden SSID]";
+        }
+        else
+        {
+          html += "<a href='/settings?ssid=";
+          html += WiFi.SSID(i).c_str();
+          html += "'>";
+          html += WiFi.SSID(i).c_str();
+          html += "</a>";
+        }
+        html += "</td>\n<td>";
+        html += WiFi.channel(i);
+        html += "</td>\n<td>";
+        html += dBm2Quality(WiFi.RSSI(i));
+        html += "%</td>\n<td>";
+        html += WiFi.RSSI(i);
+        html += "dBm</td>\n<td>";
+        switch (WiFi.encryptionType(i))
+        {
+        case ENC_TYPE_WEP: // 5
+          html += "WEP";
+          break;
+        case ENC_TYPE_TKIP: // 2
+          html += "WPA TKIP";
+          break;
+        case ENC_TYPE_CCMP: // 4
+          html += "WPA2 CCMP";
+          break;
+        case ENC_TYPE_NONE: // 7
+          html += "OPEN";
+          break;
+        case ENC_TYPE_AUTO: // 8
+          html += "WPA";
+          break;
+        }
+        html += "</td>\n<td>";
+        html += WiFi.BSSIDstr(i).c_str();
+        html += "</td>\n";
+        html += "</tr>\n";
+      }
+      html += "</table>";
+    }
+
+    HTMLFooter();
+
+    server.send(200, "text/html", html);
+  }
+}
+
 void handleReboot()
 {
   showWEBAction();
@@ -1068,7 +1220,7 @@ void handleReboot()
     if (server.method() == HTTP_POST)
     {
 
-      HTMLHeader("Reboot", 10, "/");
+      HTMLHeader("Reboot", REFRESH_TIME, "/");
       html += "Reboot in progress...";
       reboot = true;
     }
@@ -1088,41 +1240,6 @@ void handleReboot()
       delay(200);
       ESP.reset();
       delay(300);
-    }
-  }
-}
-
-void handleReset()
-{
-  showWEBAction();
-  if (!server.authenticate(cfg.username.c_str(), cfg.password.c_str()))
-  {
-    return server.requestAuthentication();
-  }
-  else
-  {
-    boolean reset = false;
-    if (server.method() == HTTP_POST)
-    {
-      HTMLHeader("Reboot", 10, "/");
-      html += "Settings deleted! Reboot in progress...";
-      reset = true;
-    }
-    else
-    {
-      HTMLHeader("Reboot");
-      html += "<form method='POST' action='/reset'>";
-      html += "<input type='submit' value='Reset settings'>";
-      html += "</form>";
-    }
-    HTMLFooter();
-
-    server.send(200, "text/html", html);
-
-    if (reset)
-    {
-      delay(200);
-      resetSettings();
     }
   }
 }
@@ -1163,7 +1280,19 @@ void handleSettings()
         value = server.arg(i);
         value.trim();
 
-        if (server.argName(i) == "apiKey")
+        if (server.argName(i) == "hostname")
+        {
+          cfg.hostname = value;
+        }
+        else if (server.argName(i) == "ssid")
+        {
+          cfg.ssid = value;
+        }
+        else if (server.argName(i) == "psk")
+        {
+          cfg.psk = value;
+        }
+        else if (server.argName(i) == "apiKey")
         {
           cfg.apiKey = value;
         }
@@ -1174,6 +1303,14 @@ void handleSettings()
         else if (server.argName(i) == "note")
         {
           cfg.note = value;
+        }
+        else if (server.argName(i) == "ntpserver")
+        {
+          cfg.ntpserver = value;
+        }
+        else if (server.argName(i) == "timeoffset")
+        {
+          cfg.timeoffset = value.toInt();
         }
         else if (server.argName(i) == "username")
         {
@@ -1201,7 +1338,7 @@ void handleSettings()
 
     if (saveandreboot)
     {
-      HTMLHeader("Settings", 10, "/settings");
+      HTMLHeader("Settings", REFRESH_TIME, "/settings");
       html += "New Settings saved! Device will be reboot...";
     }
     else
@@ -1209,6 +1346,36 @@ void handleSettings()
       HTMLHeader("Settings");
       html += "<form action='/settings' method='post'>\n";
       html += "<table>\n";
+
+      html += "<tr>\n";
+      html += "<td>Hostname:</td>\n";
+      html += "<td><input name='hostname' type='text' maxlength='30' autocapitalize='none' placeholder='";
+      html += WiFi.hostname().c_str();
+      html += "' value='";
+      html += cfg.hostname;
+      html += "'></td></tr>\n";
+
+      html += "<tr>\n<td>\nSSID:</td>\n";
+      html += "<td><input name='ssid' type='text' autocapitalize='none' maxlength='30' value='";
+      bool showssidfromcfg = true;
+      if (server.method() == HTTP_GET)
+      {
+        if (server.arg("ssid") != "")
+        {
+          html += server.arg("ssid");
+          showssidfromcfg = false;
+        }
+      }
+      if (showssidfromcfg)
+      {
+        html += cfg.ssid;
+      }
+      html += "'><a href='/wifiscan' onclick='return confirm(\"Go to scan site? Changes will be lost!\")'><button type='button' class='inline'>Scan</button></a></td>\n</tr>\n";
+
+      html += "<tr>\n<td>\nPSK:</td>\n";
+      html += "<td><input name='psk' type='password' maxlength='30' value='";
+      html += cfg.psk;
+      html += "'></td>\n</tr>\n";
 
       html += "<tr>\n<td>API URL:</td>\n";
       html += "<td><input name='apiUrl' type='text' autocapitalize='none' value='";
@@ -1223,6 +1390,16 @@ void handleSettings()
       html += "<tr>\n<td>Note:</td>\n";
       html += "<td><input name='note' type='text' autocapitalize='none' value='";
       html += cfg.note;
+      html += "'></td></tr>\n";
+
+      html += "<tr>\n<td>NTP Server:</td>\n";
+      html += "<td><input name='ntpserver' type='text' autocapitalize='none' value='";
+      html += cfg.ntpserver;
+      html += "'></td></tr>\n";
+
+      html += "<tr>\n<td>NTP Time Offset:</td>\n";
+      html += "<td><input name='timeoffset' type='text' autocapitalize='none' value='";
+      html += cfg.timeoffset;
       html += "'></td></tr>\n";
 
       html += "<tr>\n<td>\nUsername:</td>\n";
@@ -1265,7 +1442,6 @@ void handleSettings()
     if (saveandreboot)
     {
       delay(200);
-      SaveConfigCallback();
       SaveConfig();
       delay(500);
       ESP.reset();
@@ -1273,23 +1449,38 @@ void handleSettings()
   }
 }
 
+String millis2Time(unsigned long timestamp)
+{
+  char timebuff[20];
+  int sec = timestamp / 1000;
+  int min = sec / 60;
+  int hr = min / 60;
+  int days = hr / 24;
+  snprintf(timebuff, 20, " %02d:%02d:%02d:%02d", days, hr % 24, min % 60, sec % 60);
+
+  return timebuff;
+}
+
 void handleRoot()
 {
   Serial.println("[handleRoot] Webserver access");
   showWEBAction();
+
+  String value;
+  if (server.method() == HTTP_POST)
+  {
+    lastSendData = millis();
+    forceSendData = true;
+    //sendData();
+  }
+
   HTMLHeader("Main");
 
+  html += "<form action='/' method='post'>\n";
   html += "<table>\n";
 
-  char timebuf[20];
-  int sec = millis() / 1000;
-  int min = sec / 60;
-  int hr = min / 60;
-  int days = hr / 24;
-  snprintf(timebuf, 20, " %02d:%02d:%02d:%02d", days, hr % 24, min % 60, sec % 60);
-
   html += "<tr>\n<td>Uptime:</td>\n<td>";
-  html += timebuf;
+  html += millis2Time(millis());
   html += "</td>\n</tr>\n";
 
   html += "<tr>\n<td>Current time:</td>\n<td>";
@@ -1304,19 +1495,25 @@ void handleRoot()
   html += COMPILE_DATE;
   html += "</td>\n</tr>\n";
 
+  html += "<tr>\n<td>Last upload:</td>\n<td>";
+  html += millis2Time(millis() - lastSendData);
+  html += "</td>\n</tr>\n";
+
+  html += "<tr>\n<td>Next upload:</td>\n<td>";
+  html += millis2Time((lastSendData + SENDDATA_INTERVAL) - millis());
+  html += "<input type='submit' value='Upload now' class='inline'>\n";
+  html += "</td>\n</tr>\n";
+
   html += "<tr>\n<td>OneWire Sensors:</td>\n<td>";
   for (uint8_t i = 0; i < numSensorsFound; i++)
   {
 
-    snprintf(buff, 50, "%d/%d: ", i + 1, numSensorsFound);
+    snprintf(buff, 50, "%02d/%02d: %.1f", i + 1, numSensorsFound, tempSensorValues[i]);
     html += buff;
-    html += " <code>";
+    html += "&deg;C (<code>";
     printAddressForWeb(tempSensorAddresses[i], buff, true);
     html += buff;
-    html += "</code> (";
-    snprintf(buff, 50, "%.1f", tempSensorValues[i]);
-    html += buff;
-    html += " &deg;C)<br />";
+    html += "</code>)<br />";
   }
   html += "</td>\n</tr>\n";
 
@@ -1334,7 +1531,7 @@ void handleRoot()
   html += "</td>\n</tr>\n";
 
   html += "<tr>\n<td>Note:</td>\n<td>";
-  if (strcmp(cfg.note.c_str(), "") == 0)
+  if (cfg.note.isEmpty())
   {
     html += "---";
   }
@@ -1345,7 +1542,7 @@ void handleRoot()
   html += "</td>\n</tr>\n";
 
   html += "<tr>\n<td>Hostname:</td>\n<td>";
-  html += WiFi.hostname().c_str();
+  html += cfg.hostname;
   html += "</td>\n</tr>\n";
 
   html += "<tr>\n<td>IP address:</td>\n<td>";
@@ -1378,7 +1575,16 @@ void handleRoot()
   html += server.client().remoteIP().toString().c_str();
   html += "</td>\n</tr>\n";
 
+  html += "<tr>\n<td>Free Sketch Space</td>\n<td>";
+  html += ESP.getFreeSketchSpace();
+  html += " bytes</td>\n</tr>\n";
+
+  html += "<tr>\n<td>Reset Reason</td>\n<td>";
+  html += ESP.getResetReason();
+  html += "</td>\n</tr>\n";
+
   html += "</table>\n";
+  html += "</form>\n";
 
   HTMLFooter();
   server.send(200, "text/html", html);
@@ -1402,6 +1608,64 @@ void handleNotFound()
   }
 
   server.send(404, "text/html", html);
+}
+
+void handleResetOnBoot()
+{
+  unsigned long timer = 0;
+  unsigned long timer2 = 0;
+  uint8_t countdown = RESET_COUNTDOWN;
+
+  while (digitalRead(PIN_TOUCHSENSOR))
+  {
+
+    // LED
+    if (timer2 == 0 || millis() - timer2 > ((countdown * 1000) / 25))
+    {
+      setStatusToggle(COLOR_RED);
+      timer2 = millis();
+    }
+
+    // LCD
+    if (timer == 0 || millis() - timer > 1000)
+    {
+      {
+        if (countdown == 0)
+        {
+          setStatus(COLOR_RED);
+          lcd.clear();
+          lcdPrintHeader();
+          lcd.setCursor(0, 1);
+          lcd.print(F("> Factory defaults"));
+          lcd.setCursor(0, 2);
+          lcd.print(F("> restored!"));
+          lcd.setCursor(0, 3);
+          lcd.print(F("> Rebooting... "));
+          resetSettings();
+        }
+        else
+        {
+          if (countdown == RESET_COUNTDOWN)
+          {
+            lcd.clear();
+            lcdPrintHeader();
+            lcd.setCursor(0, 1);
+            lcd.print(F("> Factory reset "));
+            lcd.setCursor(0, 2);
+            lcd.print(F("> in    seconds..."));
+          }
+
+          lcd.setCursor(5, 2);
+          lcd.printf("%02d ", countdown);
+
+          timer = millis();
+          countdown = countdown - 1;
+        }
+      }
+    }
+    // Delay a little bit to avoid bouncing
+    delay(50);
+  }
 }
 
 void setup(void)
@@ -1494,38 +1758,49 @@ void setup(void)
   lcd.write(2);
   lcd.print(F(" Fabian Otto "));
 
-  lcd.backlight();
-  delay(500);
-  lcd.noBacklight();
-  delay(500);
-  lcd.backlight();
-  delay(500);
-  lcd.noBacklight();
-  delay(500);
-  lcd.backlight();
-  delay(500);
-  lcd.noBacklight();
-  delay(500);
-  lcd.backlight();
-  delay(500);
-  lcd.noBacklight();
-  delay(500);
-  lcd.backlight();
+  handleResetOnBoot();
+
+  // lcd.backlight();
+  // delay(500);
+  // lcd.noBacklight();
+  // delay(500);
+  // lcd.backlight();
+  // delay(500);
+  // lcd.noBacklight();
+  // delay(500);
+  // lcd.backlight();
+  // delay(500);
+  // lcd.noBacklight();
+  // delay(500);
+  // lcd.backlight();
+  // delay(500);
+  // lcd.noBacklight();
+  // delay(500);
+  // lcd.backlight();
 
   // Wifi connect
   wifiConnect();
 
   // NTPCLient
-  timeClient.begin();
+  if (!cfg.ntpserver.isEmpty())
+  {
+    timeClient.setPoolServerName(cfg.ntpserver.c_str());
+    if (cfg.timeoffset > 0)
+    {
+      timeClient.setTimeOffset(cfg.timeoffset);
+    }
+    timeClient.setUpdateInterval(60000);
+    timeClient.begin();
+  }
 
   // Arduino OTA Update
   httpUpdater.setup(&server, "/dofwupdate", cfg.username, cfg.password);
 
   // Webserver
   server.on("/", handleRoot);
-  server.on("/reset", handleReset);
   server.on("/reboot", handleReboot);
   server.on("/settings", handleSettings);
+  server.on("/wifiscan", handleWiFiScan);
   server.on("/fwupdate", handleFWUpdate);
   server.onNotFound(handleNotFound);
   server.begin();
@@ -1536,11 +1811,6 @@ void setup(void)
 
 void loop()
 {
-  // NTPCLient
-  lastTimeSyncWasSuccessfull = timeClient.update();
-
-  // handleButton
-  handleButton();
 
   // Webserver
   server.handleClient();
@@ -1564,15 +1834,23 @@ void loop()
     lastSensorVals = millis();
   }
 
-  // Send Data block
-  if (millis() - lastSendData > SENDDATA_INTERVAL || lastSendData == 0)
+  if (!cfg.ssid.isEmpty())
   {
-    sendData();
-    lastSendData = millis();
+    // NTPCLient
+    lastTimeSyncWasSuccessfull = timeClient.update();
+
+    // handleButton
+    handleButton();
+
+    // Send Data block
+    if (millis() - lastSendData >= SENDDATA_INTERVAL || forceSendData)
+    {
+      sendData();
+    }
+
+    screen.loop();
+
+    // LCD
+    lcdShow();
   }
-
-  screen.loop();
-
-  // LCD
-  lcdShow();
 }
