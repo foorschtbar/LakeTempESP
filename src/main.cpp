@@ -89,7 +89,7 @@ enum class LEDMode
 // ++++++++++++++++++++++++++++++++++++++++
 
 // LCD Setup
-LiquidCrystal_I2C lcd(PCF8574_ADDR_A20_A10_A00, 4, 5, 6, 16, 11, 12, 13, 14, POSITIVE);
+LiquidCrystal_I2C lcd(PCF8574_ADDR_A20_A10_A00, 4, 5, 6, 16, 11, 12, 13, 14, POSITIVE); // Only pins numbers: 4,5,6,16,11,12,13,14 are legal.
 
 // Setup a oneWire instance to communicate with any OneWire devices (not just MLOCAL >>im/Dallas temperature ICs)
 OneWire oneWire(PIN_ONE_WIRE_BUS);
@@ -178,6 +178,14 @@ void HTMLHeader(const char section[], unsigned int refresh = 0, const char url[]
 // MAIN CODE
 //
 // ++++++++++++++++++++++++++++++++++++++++
+
+template <typename... Args>
+void logf(const char *f, Args... args)
+{
+#ifdef DEBUG
+  Serial.printf(f, args...);
+#endif
+}
 
 String getUploadStatus()
 {
@@ -448,9 +456,9 @@ void SaveConfig()
   File configFile = LittleFS.open("/config.json", "w");
   serializeJson(json, configFile);
   configFile.close();
-#ifdef DEBUG
-  Serial.println("[SaveConfig] Saved");
-#endif
+
+  logf("[SaveConfig] Saved\n");
+
   //end save
 }
 
@@ -463,33 +471,27 @@ void LoadConfig()
 
     if (configFile)
     {
-#ifdef DEBUG
-      Serial.println("[LoadConfig] Opened config file");
-#endif
+
+      logf("[LoadConfig] Opened config file\n");
+
       DynamicJsonDocument json(1024);
       auto error = deserializeJson(json, configFile);
 
       if (error)
       {
-#ifdef DEBUG
-        Serial.print(F("[LoadConfig] deserializeJson() failed with code "));
-        Serial.println(error.c_str());
-#endif
+        logf("[LoadConfig] deserializeJson() failed with code %s\n", error.c_str());
       }
       else
       {
         SetConfigVars(json);
-#ifdef DEBUG
-        Serial.println("[LoadConfig] Loaded");
-#endif
+        logf("[LoadConfig] Loaded\n");
       }
     }
   }
   else
   {
-#ifdef DEBUG
-    Serial.println("[LoadConfig] No Configfile, init new file");
-#endif
+
+    logf("[LoadConfig] No Configfile, init new file\n");
     SaveConfig();
   }
 }
@@ -500,9 +502,8 @@ void resetSettings()
   File configFile = LittleFS.open("/config.json", "w");
   if (!configFile)
   {
-#ifdef DEBUG
-    Serial.println("[resetSettings] Failed to open config file for reset");
-#endif
+
+    logf("[resetSettings] Failed to open config file for reset\n");
   }
   configFile.println("");
   configFile.close();
@@ -597,18 +598,7 @@ long dBm2Quality(long dBm)
 }
 
 // function to print a device address
-void printAddress(DeviceAddress deviceAddress)
-{
-#ifdef DEBUG
-  for (uint8_t i = 0; i < 8; i++)
-  {
-    Serial.print(deviceAddress[i], HEX);
-  }
-#endif
-}
-
-// function to print a device address
-void printAddressForWeb(DeviceAddress deviceAddress, char *buffer, bool upperCase = false)
+void printAddress(DeviceAddress deviceAddress, char *buffer, bool upperCase = false)
 {
   int8_t off = 0;
   char out[17];
@@ -621,9 +611,8 @@ void printAddressForWeb(DeviceAddress deviceAddress, char *buffer, bool upperCas
 
 void initOneWireSensors()
 {
-#ifdef DEBUG
-  Serial.print(F("[initOneWireSensors] Init sensor arrays...\n"));
-#endif
+  logf("[initOneWireSensors] Init sensor arrays...\n");
+
   for (int i = 0; i < MAX_NUM_SENSORS; i++)
   {
     tempSensorValues[i] = DEVICE_DISCONNECTED_C;
@@ -632,16 +621,10 @@ void initOneWireSensors()
       tempSensorAddresses[i][ii] = 0x00;
     }
   }
-#ifdef DEBUG
-  Serial.print(F("[initOneWireSensors] Search Sensors...\n"));
-#endif
+  logf("[initOneWireSensors] Search Sensors...\n");
 
   numSensorsFound = sensors.getDeviceCount();
-
-#ifdef DEBUG
-  Serial.print(F("[initOneWireSensors] Found "));
-  Serial.println(numSensorsFound);
-#endif
+  logf("[initOneWireSensors] Found %d\n", numSensorsFound);
 
   if (numSensorsFound > 0)
   {
@@ -649,49 +632,37 @@ void initOneWireSensors()
     // select the first sensor
     for (int i = 0; i < numSensorsFound; i++)
     {
-#ifdef DEBUG
-      Serial.print(F("[initOneWireSensors] #"));
-      Serial.print(i);
-      Serial.print(F(": "));
-#endif
       if (sensors.getAddress(tempSensorAddresses[i], i))
       {
-        printAddress(tempSensorAddresses[i]);
+        printAddress(tempSensorAddresses[i], buff);
       }
       else
       {
-#ifdef DEBUG
-        Serial.print(F("no address!"));
-#endif
+        strcpy(buff, "no address!");
       }
-#ifdef DEBUG
-      Serial.println();
-#endif
+      logf("[initOneWireSensors] %d/%d: %s\n", i + 1, numSensorsFound, buff);
     }
   }
 }
 
 void getTemps()
 {
-#ifdef DEBUG
-  Serial.print("[getTemps] Request temperatures...\n");
-#endif
+  logf("[getTemps] Request temperatures...\n");
 
   sensors.requestTemperatures();
 
   for (uint8_t i = 0; i < numSensorsFound; i++)
   {
     tempSensorValues[i] = sensors.getTempC(tempSensorAddresses[i]);
-#ifdef DEBUG
+
     if (tempSensorValues[i] == DEVICE_DISCONNECTED_C)
     {
-      Serial.printf("[getTemps] #%i: disconnected\n", i);
+      logf("[getTemps] #%i: disconnected\n", i);
     }
     else
     {
-      Serial.printf("[getTemps] #%i: %.01f °C\n", i, tempSensorValues[i]);
+      logf("[getTemps] #%i: %.01f °C\n", i, tempSensorValues[i]);
     }
-#endif
   }
 }
 
@@ -790,9 +761,9 @@ void lcdPrintHeader()
 void sendData()
 {
   bool failed = true;
-#ifdef DEBUG
-  Serial.println(F("[sendData] Start upload..."));
-#endif
+
+  logf("[sendData] Start upload...\n");
+
   getTemps(); // Send the command to get temperatures
   lcd.clear();
   lcdPrintHeader();
@@ -820,18 +791,18 @@ void sendData()
   {
     if (tempSensorValues[i] != DEVICE_DISCONNECTED_C)
     {
-      printAddressForWeb(tempSensorAddresses[i], addressBuffer);
+      printAddress(tempSensorAddresses[i], addressBuffer);
       temps[addressBuffer] = tempSensorValues[i];
     }
   }
 
   yield();
 
+  logf("[sendData] Sending: ");
 #ifdef DEBUG
-  Serial.print(F("[sendData] Sending: "));
   serializeJson(jsondoc, Serial);
-  Serial.println();
 #endif
+  logf("\n");
 
   char JSONmessageBuffer[500];
   serializeJson(jsondoc, JSONmessageBuffer, sizeof(JSONmessageBuffer));
@@ -842,9 +813,7 @@ void sendData()
 
   HTTPClient https;
 
-#ifdef DEBUG
-  Serial.print("[sendData] HTTPS Client begin...\n");
-#endif
+  logf("[sendData] HTTPS Client begin...\n");
 
   setStatus(COLOR_BLUE);
 
@@ -853,9 +822,9 @@ void sendData()
 
     https.addHeader("Content-Type", "application/json"); // Add Header
     https.addHeader("X-API-Key", cfg.apiKey);            // Add Header
-#ifdef DEBUG
-    Serial.print("[sendData] HTTP POST data...\n");
-#endif
+
+    logf("[sendData] HTTP POST data...\n");
+
     // start connection and send HTTP header
     int httpCode = https.POST(JSONmessageBuffer); // Send the request
 
@@ -865,34 +834,24 @@ void sendData()
     if (httpCode > 0)
     {
       // HTTP header has been send and Server response header has been handled
-#ifdef DEBUG
-      Serial.printf("[sendData] HTTP Code: %d\n", httpCode);
-#endif
+      logf("[sendData] HTTP Code: %d\n", httpCode);
       // file found at server
       if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY)
       {
         failed = false;
-        // #ifdef DEBUG
-        //         Serial.print("[sendData] HTTP Payload: ");
-        //         String payload = https.getString();
-        //         Serial.println(payload);
-        // #endif
+        // logf("[sendData] HTTP Payload: %s", https.getString());
       }
     }
     else
     {
-#ifdef DEBUG
-      Serial.printf("[sendData] HTTP POST... failed, error: %s\n", https.errorToString(httpCode).c_str());
-#endif
+      logf("[sendData] HTTP POST... failed, error: %s\n", https.errorToString(httpCode).c_str());
     }
 
     https.end();
   }
   else
   {
-#ifdef DEBUG
-    Serial.printf("[sendData] HTTP Unable to connect\n");
-#endif
+    logf("[sendData] HTTP Unable to connect\n");
   }
 
   if (failed)
@@ -916,9 +875,7 @@ void sendData()
     uploadStatus = UploadStatus::Success;
   }
 
-#ifdef DEBUG
-  Serial.print("[sendData] finished\n");
-#endif
+  logf("[sendData] finished\n");
 
   lastSendData = millis();
   forceSendData = false;
@@ -1031,21 +988,17 @@ void handleButton()
     setPixel(COLOR_TOUCH);
     if (btnState != prevBntState) // was not pressed and is now pressed
     {
-#ifdef DEBUG
-      Serial.print("[handleButton] Button pressed short\n");
-#endif
+      logf("[handleButton] Button pressed short\n");
+
       buttonTimer = millis();
       screen.nextScreen();
-#ifdef DEBUG
-      Serial.printf("[handleButton] Current screen: %i\n", screen.currentScreen());
-#endif
+
+      logf("[handleButton] Current screen: %i\n", screen.currentScreen());
     }
 
     if ((millis() - buttonTimer >= TIME_BUTTON_LONGPRESS))
     {
-#ifdef DEBUG
-      Serial.print("[handleButton] Button pressed long\n");
-#endif
+      logf("[handleButton] Button pressed long\n");
       sendData();
     }
 
@@ -1065,10 +1018,10 @@ void wifiConnect()
   {
     wifiStatus = WiFiStatus::Hotspot;
     // Start AP
-#ifdef DEBUG
-    Serial.println(F("[wifiConnect] Default Config loaded."));
-    Serial.println(F("[wifiConnect] Starting WiFi SoftAP"));
-#endif
+
+    logf("[wifiConnect] Default Config loaded.\n");
+    logf("[wifiConnect] Starting WiFi SoftAP\n");
+
     WiFi.softAP("LakeTempESP", "");
 
     lcd.clear();
@@ -1082,9 +1035,8 @@ void wifiConnect()
   }
   else
   {
-#ifdef DEBUG
-    Serial.printf("[wifiConnect] Connecing to '%s'. Please wait", cfg.ssid.c_str());
-#endif
+
+    logf("[wifiConnect] Connecing to '%s'. Please wait", cfg.ssid.c_str());
 
     lcd.clear();
     lcdPrintHeader();
@@ -1104,9 +1056,7 @@ void wifiConnect()
     while (WiFi.status() != WL_CONNECTED)
     {
       delay(250);
-#ifdef DEBUG
-      Serial.print(F("."));
-#endif
+      logf(".");
       setPixelToggle(COLOR_BLUE);
     }
     setStatus(COLOR_BLUE);
@@ -1125,21 +1075,17 @@ void wifiConnect()
     lcd.print(F("GW: "));
     lcd.setCursor(4, 4);
     lcd.print(WiFi.gatewayIP());
+
+    logf("\n[wifiConnect] WiFi connected!\n");
+    logf("> IP: %s\n", WiFi.localIP().toString().c_str());
+    logf("> Subnetmask: %s\n", WiFi.subnetMask().toString().c_str());
+    logf("> GW: %s\n", WiFi.gatewayIP().toString().c_str());
+    logf("> DNS: %s\n", WiFi.dnsIP().toString().c_str());
+    logf("> WiFi Diag:\n");
 #ifdef DEBUG
-    Serial.println();
-    Serial.println("[wifiConnect] WiFi connected!");
-    Serial.print("> IP: ");
-    Serial.println(WiFi.localIP());
-    Serial.print("> Subnetmask: ");
-    Serial.println(WiFi.subnetMask());
-    Serial.print("> GW: ");
-    Serial.println(WiFi.gatewayIP());
-    Serial.print("> DNS: ");
-    Serial.println(WiFi.dnsIP());
-    Serial.print("> WiFi Diag:\n");
     WiFi.printDiag(Serial);
-    Serial.println();
 #endif
+    logf("\n");
     delay(1000);
     screen.reset();
   }
@@ -1308,7 +1254,7 @@ void printSensorOptionList(uint8_t selectedValue)
 
   for (uint8_t i = 0; i < numSensorsFound; i++)
   {
-    printAddressForWeb(tempSensorAddresses[i], buffer, true);
+    printAddress(tempSensorAddresses[i], buffer, true);
 
     html += "<option value='";
     html += i;
@@ -1521,9 +1467,9 @@ String millis2Time(unsigned long timestamp)
 
 void handleRoot()
 {
-#ifdef DEBUG
-  Serial.println("[handleRoot] Webserver access");
-#endif
+
+  logf("[handleRoot] Webserver access\n");
+
   showWEBAction();
 
   String value;
@@ -1567,11 +1513,10 @@ void handleRoot()
   html += "<tr>\n<td>OneWire Sensors:</td>\n<td>";
   for (uint8_t i = 0; i < numSensorsFound; i++)
   {
-
     snprintf(buff, 50, "%02d/%02d: %.1f", i + 1, numSensorsFound, tempSensorValues[i]);
     html += buff;
     html += "&deg;C (<code>";
-    printAddressForWeb(tempSensorAddresses[i], buff, true);
+    printAddress(tempSensorAddresses[i], buff, true);
     html += buff;
     html += "</code>)<br />";
   }
@@ -1729,28 +1674,21 @@ void setup(void)
 {
 #ifdef DEBUG
   Serial.begin(115200);
-  delay(100); // per sample code on RF_95 test
-  Serial.print(F("\n\n== Welcome to LakeTemp "));
-  Serial.print(FIRMWARE_VERSION);
-  Serial.println(F(" =="));
+  delay(100);
 #endif
+  logf("\n\n == Welcome to LakeTemp v%s ==\n", FIRMWARE_VERSION);
 
   // Mounting FileSystem
-#ifdef DEBUG
-  Serial.println(F("[setup] Mounting file system..."));
-#endif
+  logf("[setup] Mounting file system...\n");
+
   if (LittleFS.begin())
   {
-#ifdef DEBUG
-    Serial.println(F("[setup] Mounted file system."));
-#endif
+    logf("[setup] Mounted file system.\n");
     LoadConfig();
   }
   else
   {
-#ifdef DEBUG
-    Serial.println(F("[setup] Failed to mount FS"));
-#endif
+    logf("[setup] Failed to mount FS\n");
   }
 
   // Setting the I/O pin modes
@@ -1763,39 +1701,22 @@ void setup(void)
   setStatus(COLOR_YELLOW);
 
   // BME Begin
-#ifdef DEBUG
-  Serial.println("[setup] Searching BME280 sensor...");
-#endif
+  logf("[setup] Searching BME280 sensor...\n");
   if (!bme.begin(BME280_ADDRESS_ALTERNATE))
   {
-#ifdef DEBUG
-    Serial.println("Could not find a valid BME280 sensor, check wiring, address, sensor ID!");
-    Serial.print("SensorID was: 0x");
-    Serial.println(bme.sensorID(), 16);
-#endif
+    logf("Could not find a valid BME280 sensor, check wiring, address, sensor ID!\n");
   }
   else
   {
-#ifdef DEBUG
-    Serial.println("[setup] Found valid BME280 sensor!");
-    Serial.print("> Temperature = ");
-    Serial.print(bme.readTemperature());
-    Serial.println(" °C");
-
-    Serial.print("> Pressure = ");
-    Serial.print(bme.readPressure() / 100.0F);
-    Serial.println(" hPa");
-
-    Serial.print("> Humidity = ");
-    Serial.print(bme.readHumidity());
-    Serial.println(" %");
-#endif
+    logf("[setup] Found valid BME280 sensor!\n");
+    logf("> Temperature = %f °C\n", bme.readTemperature());
+    logf("> Pressure = %f hPa\n", bme.readPressure() / 100.0F);
+    logf("> Humidity = %f %%\n", bme.readHumidity());
   }
 
   // OneWire
-#ifdef DEBUG
-  Serial.println("[setup] Searching OneWire sensors...");
-#endif
+  logf("[setup] Searching OneWire sensors...\n");
+
   sensors.begin();
   initOneWireSensors();
   getTemps();
@@ -1803,14 +1724,13 @@ void setup(void)
   // LCD begin
   while (lcd.begin(LCD_COLUMS, LCD_ROWS) != 1)
   {
-#ifdef DEBUG
-    Serial.println(F("[setup] PCF8574 is not connected or lcd pins declaration is wrong. Only pins numbers: 4,5,6,16,11,12,13,14 are legal."));
-#endif
+
+    logf("[setup] PCF8574 is not connected\n");
+
     delay(5000);
   }
-#ifdef DEBUG
-  Serial.println(F("[setup] PCF8574 connected!"));
-#endif
+
+  logf("[setup] PCF8574 connected!\n");
 
   lcd.createChar(0, Eszett);
   lcd.createChar(1, Degree);
