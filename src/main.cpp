@@ -17,7 +17,7 @@
 #include <Adafruit_NeoPixel.h>
 #include <LittleFS.h>
 #include <WiFiManager.h>
-#include "config.h"
+#include "misc.h"
 
 // ++++++++++++++++++++++++++++++++++++++++
 //
@@ -38,81 +38,22 @@
 #define LCD_SPACE_SYMBOL 0x20 //space symbol from the LCD ROM, see p.9 of GDM2004D datasheet
 
 // Other
-#define MAX_NUM_SENSORS 10
-#define RESET_COUNTDOWN 5 // How long the button needs to be pressed at startup to reset to factory defaults. Warning: Touchsensors goes to low after approx 5s continous pressing!
-#define REFRESH_TIME 20   // After this time in sec pages refreshes
-// Constatns
-const int SHOW_SCREEN_0_TIME = 30;       // How long screen #1 are shown
-const int SHOW_SCREEN_1_TIME = 5;        // How long screen #2 are shown
-const int SHOW_SCREEN_2_TIME = 5;        // How long screen #3 are shown
-const long SENDDATA_INTERVAL = 300000;   // 5 Min (Regelmaesiger Upload)
-const long REQ_SENSOR_INTERVAL = 30000;  // 30 sek
-const long TIME_BUTTON_LONGPRESS = 1000; // 1s
-const bool HEADER_TIME_WITH_SEC = true;  // Show secconds in header
+#define MAX_NUM_SENSORS 10         //
+#define RESET_COUNTDOWN 5          // How long the button needs to be pressed at startup to reset to factory defaults. Warning: Touchsensors goes to low after approx 5s continous pressing!
+#define REFRESH_TIME 20            // After this time in sec pages refreshes
+#define LED_BLINK_INTERVAL 200     //
+#define LED_FADE_INTERVAL 100      //
+#define SHOW_SCREEN_0_TIME 30      // How long screen #1 are shown
+#define SHOW_SCREEN_1_TIME 5       // How long screen #2 are shown
+#define SHOW_SCREEN_2_TIME 5       // How long screen #3 are shown
+#define SENDDATA_INTERVAL 300000   // 5 Min (Regelmaesiger Upload)
+#define REQ_SENSOR_INTERVAL 30000  // 30 sek
+#define TIME_BUTTON_LONGPRESS 1000 // 1s
+#define HEADER_TIME_WITH_SEC true  // Show secconds in header
 
 // Constants - Misc
 const char FIRMWARE_VERSION[] = "5.1";
 const char COMPILE_DATE[] = __DATE__ " " __TIME__;
-
-//  Eszett
-const uint8_t Eszett[8] = {
-    B01100,
-    B10010,
-    B10010,
-    B10110,
-    B10001,
-    B10001,
-    B10110,
-    B10000,
-};
-
-// Grad
-const uint8_t Degree[8] = {
-    B01100,
-    B10010,
-    B10010,
-    B01100,
-    B00000,
-    B00000,
-    B00000,
-    B00000,
-};
-
-// Copy
-const uint8_t Copy[8] = {
-    B01110,
-    B10001,
-    B10111,
-    B11001,
-    B11001,
-    B10111,
-    B10001,
-    B01110,
-};
-
-// Heart1
-const uint8_t Heart1[8] = {
-    B00000,
-    B01010,
-    B10101,
-    B10001,
-    B01010,
-    B00100,
-    B00000,
-    B00000,
-};
-
-// Heart2
-const uint8_t Heart2[8] = {
-    B00000,
-    B01010,
-    B11111,
-    B11111,
-    B01110,
-    B00100,
-    B00000,
-    B00000,
-};
 
 // ++++++++++++++++++++++++++++++++++++++++
 //
@@ -122,9 +63,23 @@ const uint8_t Heart2[8] = {
 
 enum class UploadStatus
 {
-  uplUnknown,
-  uplSuccess,
-  uplFailed
+  Unknown,
+  Success,
+  Failed
+};
+
+enum class WiFiStatus
+{
+  Unknown,
+  Hotspot,
+  Client
+};
+
+enum class LEDMode
+{
+  Normal,
+  Blink,
+  Fade
 };
 
 // ++++++++++++++++++++++++++++++++++++++++
@@ -172,17 +127,18 @@ String html;
 char buff[255];
 
 // Variables will change
-uint8_t highwater = 0;                                //
-bool forceSendData = true;                            //
-unsigned long lastSendData = 0;                       //
-unsigned long lastSensorVals = 0;                     // will store last time temps and water was updated
-unsigned long buttonTimer = 0;                        // will store how long button was pressed
-uint8_t numSensorsFound = 0;                          // number of oneWire sensors
-bool previousButtonState = 1;                         // will store last Button state. 1 = unpressed, 0 = pressed
-bool lastTimeSyncWasSuccessfull = 0;                  // Will store if last sync with NTP server was okay
-float tempSensorValues[MAX_NUM_SENSORS];              // will store temp sensor values
-DeviceAddress tempSensorAddresses[MAX_NUM_SENSORS];   // will store temp sensor addresses
-UploadStatus uploadStatus = UploadStatus::uplUnknown; //
+uint8_t highwater = 0;                              //
+bool forceSendData = true;                          //
+unsigned long lastSendData = 0;                     //
+unsigned long lastSensorVals = 0;                   // will store last time temps and water was updated
+unsigned long buttonTimer = 0;                      // will store how long button was pressed
+unsigned long ledTimer = 0;                         //
+uint8_t numSensorsFound = 0;                        // number of oneWire sensors
+bool lastTimeSyncWasSuccessfull = 0;                // Will store if last sync with NTP server was okay
+float tempSensorValues[MAX_NUM_SENSORS];            // will store temp sensor values
+DeviceAddress tempSensorAddresses[MAX_NUM_SENSORS]; // will store temp sensor addresses
+UploadStatus uploadStatus = UploadStatus::Unknown;  //
+WiFiStatus wifiStatus = WiFiStatus::Unknown;        //
 
 typedef struct
 {
@@ -203,13 +159,17 @@ typedef struct
 configData_t cfg;
 
 // Colors
-#define COLOR_BRIGHTNESS 100
+#define LED_BRIGHTNESS 100
 #define COLOR_BLACK pixels.Color(0, 0, 0)
-#define COLOR_WIFI pixels.Color(0, 0, COLOR_BRIGHTNESS)
-#define COLOR_RED pixels.Color(COLOR_BRIGHTNESS, 0, 0)
-#define COLOR_OKAY pixels.Color(0, COLOR_BRIGHTNESS, 0)
-#define COLOR_TOUCH pixels.Color(COLOR_BRIGHTNESS, COLOR_BRIGHTNESS, COLOR_BRIGHTNESS)
-uint32_t lastLEDStatus = COLOR_BLACK;
+#define COLOR_BLUE pixels.Color(0, 0, 255)
+#define COLOR_RED pixels.Color(255, 0, 0)
+#define COLOR_GREEN pixels.Color(0, 255, 0)
+#define COLOR_ORANGE pixels.Color(255, 200, 0)
+#define COLOR_YELLOW pixels.Color(255, 255, 0)
+#define COLOR_TOUCH pixels.Color(255, 255, 255)
+uint32_t ledColor = COLOR_BLACK;
+bool ledFirstLoop = true;
+LEDMode ledMode = LEDMode::Normal;
 
 void HTMLHeader(const char section[], unsigned int refresh = 0, const char url[] = "/");
 
@@ -221,11 +181,11 @@ void HTMLHeader(const char section[], unsigned int refresh = 0, const char url[]
 
 String getUploadStatus()
 {
-  if (uploadStatus == UploadStatus::uplSuccess)
+  if (uploadStatus == UploadStatus::Success)
   {
     return "Success";
   }
-  else if (uploadStatus == UploadStatus::uplFailed)
+  else if (uploadStatus == UploadStatus::Failed)
   {
     return "Failed";
   }
@@ -488,7 +448,9 @@ void SaveConfig()
   File configFile = LittleFS.open("/config.json", "w");
   serializeJson(json, configFile);
   configFile.close();
+#ifdef DEBUG
   Serial.println("[SaveConfig] Saved");
+#endif
   //end save
 }
 
@@ -501,26 +463,33 @@ void LoadConfig()
 
     if (configFile)
     {
+#ifdef DEBUG
       Serial.println("[LoadConfig] Opened config file");
-
+#endif
       DynamicJsonDocument json(1024);
       auto error = deserializeJson(json, configFile);
 
       if (error)
       {
+#ifdef DEBUG
         Serial.print(F("[LoadConfig] deserializeJson() failed with code "));
         Serial.println(error.c_str());
+#endif
       }
       else
       {
         SetConfigVars(json);
+#ifdef DEBUG
         Serial.println("[LoadConfig] Loaded");
+#endif
       }
     }
   }
   else
   {
+#ifdef DEBUG
     Serial.println("[LoadConfig] No Configfile, init new file");
+#endif
     SaveConfig();
   }
 }
@@ -531,7 +500,9 @@ void resetSettings()
   File configFile = LittleFS.open("/config.json", "w");
   if (!configFile)
   {
+#ifdef DEBUG
     Serial.println("[resetSettings] Failed to open config file for reset");
+#endif
   }
   configFile.println("");
   configFile.close();
@@ -540,22 +511,79 @@ void resetSettings()
   delay(300);
 }
 
-void setStatus(uint32_t c)
+void setPixel(uint32_t c, uint b = LED_BRIGHTNESS)
 {
-  pixels.setPixelColor(0, c);
-  pixels.show();
+  static uint32_t lastLEDColor;
+  static uint lastLEDBrightness;
+
+  if (lastLEDColor != c || lastLEDBrightness != b)
+  {
+    pixels.setPixelColor(0, c);
+    pixels.setBrightness(b);
+    pixels.show();
+    lastLEDColor = c;
+    lastLEDBrightness = b;
+  }
 }
 
-void setStatusToggle(uint32_t c1, uint32_t c2 = COLOR_BLACK)
+void setStatus(uint32_t c, LEDMode mode = LEDMode::Normal)
+{
+  ledMode = mode;
+  ledColor = c;
+  ledFirstLoop = true;
+  setPixel(c);
+}
+
+void setPixelToggle(uint32_t c1, uint32_t c2 = COLOR_BLACK)
 {
   static bool last;
 
+  if (ledFirstLoop)
+  {
+    last = true;
+    ledFirstLoop = false;
+  }
+
   if (last)
-    setStatus(c1);
+    setPixel(c1);
   else
-    setStatus(c2);
+    setPixel(c2);
 
   last = !last;
+}
+
+void setPixelFade(uint32_t c1, uint min)
+{
+  static uint bright;
+  static bool direction; // true = down, false = up
+
+  if (ledFirstLoop)
+  {
+    bright = LED_BRIGHTNESS;
+    direction = true;
+    ledFirstLoop = false;
+  }
+
+  setPixel(ledColor, bright);
+
+  if (direction)
+  {
+    bright -= 5;
+  }
+  else
+  {
+    bright += 5;
+  }
+
+  // set direction for next loop
+  if (bright >= LED_BRIGHTNESS)
+  {
+    direction = true; // down
+  }
+  else if (bright <= min)
+  {
+    direction = false; // up
+  }
 }
 
 long dBm2Quality(long dBm)
@@ -571,14 +599,12 @@ long dBm2Quality(long dBm)
 // function to print a device address
 void printAddress(DeviceAddress deviceAddress)
 {
+#ifdef DEBUG
   for (uint8_t i = 0; i < 8; i++)
   {
-    if (deviceAddress[i] < 16)
-    {
-      Serial.print(F("0"));
-    }
     Serial.print(deviceAddress[i], HEX);
   }
+#endif
 }
 
 // function to print a device address
@@ -595,8 +621,9 @@ void printAddressForWeb(DeviceAddress deviceAddress, char *buffer, bool upperCas
 
 void initOneWireSensors()
 {
-  Serial.print(F("[initOneWireSensors] Init sensor arrays..."));
-
+#ifdef DEBUG
+  Serial.print(F("[initOneWireSensors] Init sensor arrays...\n"));
+#endif
   for (int i = 0; i < MAX_NUM_SENSORS; i++)
   {
     tempSensorValues[i] = DEVICE_DISCONNECTED_C;
@@ -605,13 +632,16 @@ void initOneWireSensors()
       tempSensorAddresses[i][ii] = 0x00;
     }
   }
-
-  Serial.print(F("[initOneWireSensors] Search Sensors..."));
+#ifdef DEBUG
+  Serial.print(F("[initOneWireSensors] Search Sensors...\n"));
+#endif
 
   numSensorsFound = sensors.getDeviceCount();
 
+#ifdef DEBUG
   Serial.print(F("[initOneWireSensors] Found "));
   Serial.println(numSensorsFound);
+#endif
 
   if (numSensorsFound > 0)
   {
@@ -619,30 +649,40 @@ void initOneWireSensors()
     // select the first sensor
     for (int i = 0; i < numSensorsFound; i++)
     {
+#ifdef DEBUG
       Serial.print(F("[initOneWireSensors] #"));
       Serial.print(i);
       Serial.print(F(": "));
+#endif
       if (sensors.getAddress(tempSensorAddresses[i], i))
       {
         printAddress(tempSensorAddresses[i]);
       }
       else
       {
+#ifdef DEBUG
         Serial.print(F("no address!"));
+#endif
       }
+#ifdef DEBUG
       Serial.println();
+#endif
     }
   }
 }
 
 void getTemps()
 {
+#ifdef DEBUG
   Serial.print("[getTemps] Request temperatures...\n");
+#endif
+
   sensors.requestTemperatures();
 
   for (uint8_t i = 0; i < numSensorsFound; i++)
   {
     tempSensorValues[i] = sensors.getTempC(tempSensorAddresses[i]);
+#ifdef DEBUG
     if (tempSensorValues[i] == DEVICE_DISCONNECTED_C)
     {
       Serial.printf("[getTemps] #%i: disconnected\n", i);
@@ -651,16 +691,8 @@ void getTemps()
     {
       Serial.printf("[getTemps] #%i: %.01f °C\n", i, tempSensorValues[i]);
     }
+#endif
   }
-}
-
-void printDigits(int digits)
-{
-  // utility function for digital clock display: prints preceding colon and leading 0
-  Serial.print(F(":"));
-  if (digits < 10)
-    Serial.print('0');
-  Serial.print(digits);
 }
 
 void lcdPrintFormatedTime(unsigned long inttime, boolean shorttime)
@@ -758,10 +790,10 @@ void lcdPrintHeader()
 void sendData()
 {
   bool failed = true;
-
-  Serial.println(F("[sendData] Start upload...")); //
-                                                   // Send the command to get temperatures
-  getTemps();                                      //
+#ifdef DEBUG
+  Serial.println(F("[sendData] Start upload..."));
+#endif
+  getTemps(); // Send the command to get temperatures
   lcd.clear();
   lcdPrintHeader();
   lcd.setCursor(0, 1);
@@ -795,9 +827,11 @@ void sendData()
 
   yield();
 
+#ifdef DEBUG
   Serial.print(F("[sendData] Sending: "));
   serializeJson(jsondoc, Serial);
   Serial.println();
+#endif
 
   char JSONmessageBuffer[500];
   serializeJson(jsondoc, JSONmessageBuffer, sizeof(JSONmessageBuffer));
@@ -808,17 +842,20 @@ void sendData()
 
   HTTPClient https;
 
+#ifdef DEBUG
   Serial.print("[sendData] HTTPS Client begin...\n");
+#endif
 
-  setStatus(COLOR_WIFI);
+  setStatus(COLOR_BLUE);
 
   if (https.begin(*client, cfg.apiUrl))
   { // HTTPS
 
     https.addHeader("Content-Type", "application/json"); // Add Header
     https.addHeader("X-API-Key", cfg.apiKey);            // Add Header
-
+#ifdef DEBUG
     Serial.print("[sendData] HTTP POST data...\n");
+#endif
     // start connection and send HTTP header
     int httpCode = https.POST(JSONmessageBuffer); // Send the request
 
@@ -828,41 +865,37 @@ void sendData()
     if (httpCode > 0)
     {
       // HTTP header has been send and Server response header has been handled
+#ifdef DEBUG
       Serial.printf("[sendData] HTTP Code: %d\n", httpCode);
-
+#endif
       // file found at server
       if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY)
       {
         failed = false;
-
-        /*Serial.print("[sendData] HTTP Payload: ");
-        String payload = https.getString();
-        Serial.println(payload);*/
+        // #ifdef DEBUG
+        //         Serial.print("[sendData] HTTP Payload: ");
+        //         String payload = https.getString();
+        //         Serial.println(payload);
+        // #endif
       }
     }
     else
     {
+#ifdef DEBUG
       Serial.printf("[sendData] HTTP POST... failed, error: %s\n", https.errorToString(httpCode).c_str());
+#endif
     }
 
     https.end();
   }
   else
   {
+#ifdef DEBUG
     Serial.printf("[sendData] HTTP Unable to connect\n");
+#endif
   }
 
-  if (!failed)
-  {
-    setStatus(COLOR_OKAY);
-    lcd.noBlink();
-    lcd.setCursor(0, 2);
-    lcd.print(F("> synced!        "));
-    delay(1000);
-    screen.reset();
-    uploadStatus = UploadStatus::uplSuccess;
-  }
-  else
+  if (failed)
   {
     setStatus(COLOR_RED);
     lcd.noBlink();
@@ -870,9 +903,22 @@ void sendData()
     lcd.print(F("> failed!        "));
     delay(1000);
     screen.reset();
-    uploadStatus = UploadStatus::uplFailed;
-    setStatus(COLOR_RED);
+    uploadStatus = UploadStatus::Failed;
   }
+  else
+  {
+    setStatus(COLOR_GREEN, LEDMode::Fade);
+    lcd.noBlink();
+    lcd.setCursor(0, 2);
+    lcd.print(F("> synced!        "));
+    delay(1000);
+    screen.reset();
+    uploadStatus = UploadStatus::Success;
+  }
+
+#ifdef DEBUG
+  Serial.print("[sendData] finished\n");
+#endif
 
   lastSendData = millis();
   forceSendData = false;
@@ -977,31 +1023,36 @@ void lcdShow()
 
 void handleButton()
 {
-  bool inp = !digitalRead(PIN_TOUCHSENSOR);
-  if (inp == 0)
+  static bool prevBntState;
+  bool btnState = digitalRead(PIN_TOUCHSENSOR);
+
+  if (btnState) // pressed
   {
-    if (inp != previousButtonState)
+    setPixel(COLOR_TOUCH);
+    if (btnState != prevBntState) // was not pressed and is now pressed
     {
+#ifdef DEBUG
       Serial.print("[handleButton] Button pressed short\n");
-      //setStatus(COLOR_TOUCH);
+#endif
       buttonTimer = millis();
       screen.nextScreen();
+#ifdef DEBUG
       Serial.printf("[handleButton] Current screen: %i\n", screen.currentScreen());
+#endif
     }
+
     if ((millis() - buttonTimer >= TIME_BUTTON_LONGPRESS))
     {
+#ifdef DEBUG
       Serial.print("[handleButton] Button pressed long\n");
+#endif
       sendData();
     }
 
     // Delay a little bit to avoid bouncing
     delay(50);
   }
-  else
-  {
-    //setStatus(lastStatus);
-  }
-  previousButtonState = inp;
+  prevBntState = btnState;
 }
 
 void wifiConnect()
@@ -1012,11 +1063,13 @@ void wifiConnect()
   // AP or Infrastructire mode
   if (cfg.ssid.isEmpty())
   {
+    wifiStatus = WiFiStatus::Hotspot;
     // Start AP
+#ifdef DEBUG
     Serial.println(F("[wifiConnect] Default Config loaded."));
     Serial.println(F("[wifiConnect] Starting WiFi SoftAP"));
+#endif
     WiFi.softAP("LakeTempESP", "");
-    setStatus(COLOR_WIFI);
 
     lcd.clear();
     lcdPrintHeader();
@@ -1029,8 +1082,9 @@ void wifiConnect()
   }
   else
   {
-
+#ifdef DEBUG
     Serial.printf("[wifiConnect] Connecing to '%s'. Please wait", cfg.ssid.c_str());
+#endif
 
     lcd.clear();
     lcdPrintHeader();
@@ -1040,7 +1094,7 @@ void wifiConnect()
     lcd.print(F("> WiFi Network..."));
     lcd.blink();
 
-    setStatus(COLOR_WIFI);
+    setStatus(COLOR_BLUE);
 
     WiFi.mode(WIFI_STA);
     WiFi.hostname(cfg.hostname);
@@ -1050,10 +1104,13 @@ void wifiConnect()
     while (WiFi.status() != WL_CONNECTED)
     {
       delay(250);
+#ifdef DEBUG
       Serial.print(F("."));
-      setStatusToggle(COLOR_WIFI);
+#endif
+      setPixelToggle(COLOR_BLUE);
     }
-    setStatus(COLOR_WIFI);
+    setStatus(COLOR_BLUE);
+    wifiStatus = WiFiStatus::Client;
 
     lcd.noBlink();
     lcd.clear();
@@ -1068,7 +1125,7 @@ void wifiConnect()
     lcd.print(F("GW: "));
     lcd.setCursor(4, 4);
     lcd.print(WiFi.gatewayIP());
-
+#ifdef DEBUG
     Serial.println();
     Serial.println("[wifiConnect] WiFi connected!");
     Serial.print("> IP: ");
@@ -1082,6 +1139,7 @@ void wifiConnect()
     Serial.print("> WiFi Diag:\n");
     WiFi.printDiag(Serial);
     Serial.println();
+#endif
     delay(1000);
     screen.reset();
   }
@@ -1221,7 +1279,7 @@ void handleReboot()
     {
 
       HTMLHeader("Reboot", REFRESH_TIME, "/");
-      html += "Reboot in progress...";
+      html += ">>> Reboot in progress... <<<";
       reboot = true;
     }
     else
@@ -1339,7 +1397,7 @@ void handleSettings()
     if (saveandreboot)
     {
       HTMLHeader("Settings", REFRESH_TIME, "/settings");
-      html += "New Settings saved! Device will be reboot...";
+      html += ">>> New Settings saved! Reboot in progress... <<<";
     }
     else
     {
@@ -1463,7 +1521,9 @@ String millis2Time(unsigned long timestamp)
 
 void handleRoot()
 {
+#ifdef DEBUG
   Serial.println("[handleRoot] Webserver access");
+#endif
   showWEBAction();
 
   String value;
@@ -1618,49 +1678,46 @@ void handleResetOnBoot()
 
   while (digitalRead(PIN_TOUCHSENSOR))
   {
-
     // LED
     if (timer2 == 0 || millis() - timer2 > ((countdown * 1000) / 25))
     {
-      setStatusToggle(COLOR_RED);
+      setPixelToggle(COLOR_RED);
       timer2 = millis();
     }
 
     // LCD
     if (timer == 0 || millis() - timer > 1000)
     {
+      if (countdown == 0)
       {
-        if (countdown == 0)
+        setStatus(COLOR_RED);
+        lcd.clear();
+        lcdPrintHeader();
+        lcd.setCursor(0, 1);
+        lcd.print(F("> Factory defaults"));
+        lcd.setCursor(0, 2);
+        lcd.print(F("> restored!"));
+        lcd.setCursor(0, 3);
+        lcd.print(F("> Rebooting... "));
+        resetSettings();
+      }
+      else
+      {
+        if (countdown == RESET_COUNTDOWN)
         {
-          setStatus(COLOR_RED);
           lcd.clear();
           lcdPrintHeader();
           lcd.setCursor(0, 1);
-          lcd.print(F("> Factory defaults"));
+          lcd.print(F("> Factory reset "));
           lcd.setCursor(0, 2);
-          lcd.print(F("> restored!"));
-          lcd.setCursor(0, 3);
-          lcd.print(F("> Rebooting... "));
-          resetSettings();
+          lcd.print(F("> in    seconds..."));
         }
-        else
-        {
-          if (countdown == RESET_COUNTDOWN)
-          {
-            lcd.clear();
-            lcdPrintHeader();
-            lcd.setCursor(0, 1);
-            lcd.print(F("> Factory reset "));
-            lcd.setCursor(0, 2);
-            lcd.print(F("> in    seconds..."));
-          }
 
-          lcd.setCursor(5, 2);
-          lcd.printf("%02d ", countdown);
+        lcd.setCursor(5, 2);
+        lcd.printf("%02d ", countdown);
 
-          timer = millis();
-          countdown = countdown - 1;
-        }
+        timer = millis();
+        countdown = countdown - 1;
       }
     }
     // Delay a little bit to avoid bouncing
@@ -1670,22 +1727,30 @@ void handleResetOnBoot()
 
 void setup(void)
 {
-
+#ifdef DEBUG
   Serial.begin(115200);
+  delay(100); // per sample code on RF_95 test
   Serial.print(F("\n\n== Welcome to LakeTemp "));
   Serial.print(FIRMWARE_VERSION);
   Serial.println(F(" =="));
+#endif
 
   // Mounting FileSystem
+#ifdef DEBUG
   Serial.println(F("[setup] Mounting file system..."));
+#endif
   if (LittleFS.begin())
   {
+#ifdef DEBUG
     Serial.println(F("[setup] Mounted file system."));
+#endif
     LoadConfig();
   }
   else
   {
+#ifdef DEBUG
     Serial.println(F("[setup] Failed to mount FS"));
+#endif
   }
 
   // Setting the I/O pin modes
@@ -1695,18 +1760,23 @@ void setup(void)
   // NeoPixel
   pixels.begin();
   pixels.clear();
-  setStatus(COLOR_RED);
+  setStatus(COLOR_YELLOW);
 
   // BME Begin
+#ifdef DEBUG
   Serial.println("[setup] Searching BME280 sensor...");
+#endif
   if (!bme.begin(BME280_ADDRESS_ALTERNATE))
   {
+#ifdef DEBUG
     Serial.println("Could not find a valid BME280 sensor, check wiring, address, sensor ID!");
     Serial.print("SensorID was: 0x");
     Serial.println(bme.sensorID(), 16);
+#endif
   }
   else
   {
+#ifdef DEBUG
     Serial.println("[setup] Found valid BME280 sensor!");
     Serial.print("> Temperature = ");
     Serial.print(bme.readTemperature());
@@ -1719,10 +1789,13 @@ void setup(void)
     Serial.print("> Humidity = ");
     Serial.print(bme.readHumidity());
     Serial.println(" %");
+#endif
   }
 
   // OneWire
+#ifdef DEBUG
   Serial.println("[setup] Searching OneWire sensors...");
+#endif
   sensors.begin();
   initOneWireSensors();
   getTemps();
@@ -1730,11 +1803,14 @@ void setup(void)
   // LCD begin
   while (lcd.begin(LCD_COLUMS, LCD_ROWS) != 1)
   {
+#ifdef DEBUG
     Serial.println(F("[setup] PCF8574 is not connected or lcd pins declaration is wrong. Only pins numbers: 4,5,6,16,11,12,13,14 are legal."));
+#endif
     delay(5000);
   }
-
+#ifdef DEBUG
   Serial.println(F("[setup] PCF8574 connected!"));
+#endif
 
   lcd.createChar(0, Eszett);
   lcd.createChar(1, Degree);
@@ -1789,7 +1865,7 @@ void setup(void)
     {
       timeClient.setTimeOffset(cfg.timeoffset);
     }
-    timeClient.setUpdateInterval(60000);
+    timeClient.setUpdateInterval(60 * 60 * 1000); // in ms
     timeClient.begin();
   }
 
@@ -1805,8 +1881,14 @@ void setup(void)
   server.onNotFound(handleNotFound);
   server.begin();
 
-  // Setup complete
-  setStatus(COLOR_OKAY);
+  if (wifiStatus == WiFiStatus::Client)
+  {
+    setStatus(COLOR_GREEN, LEDMode::Fade);
+  }
+  else if (wifiStatus == WiFiStatus::Hotspot)
+  {
+    setStatus(COLOR_BLUE, LEDMode::Blink);
+  }
 }
 
 void loop()
@@ -1834,7 +1916,7 @@ void loop()
     lastSensorVals = millis();
   }
 
-  if (!cfg.ssid.isEmpty())
+  if (wifiStatus == WiFiStatus::Client)
   {
     // NTPCLient
     lastTimeSyncWasSuccessfull = timeClient.update();
@@ -1852,5 +1934,27 @@ void loop()
 
     // LCD
     lcdShow();
+  }
+
+  // LED Modes
+  if (ledMode == LEDMode::Blink)
+  {
+    if (millis() - ledTimer > LED_BLINK_INTERVAL)
+    {
+      setPixelToggle(ledColor);
+      ledTimer = millis();
+    }
+  }
+  else if (ledMode == LEDMode::Fade)
+  {
+    if (millis() - ledTimer > LED_FADE_INTERVAL)
+    {
+      setPixelFade(ledColor, 20);
+      ledTimer = millis();
+    }
+  }
+  else
+  {
+    setPixel(ledColor);
   }
 }
