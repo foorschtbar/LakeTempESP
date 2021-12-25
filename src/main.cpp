@@ -52,7 +52,7 @@
 #define HEADER_TIME_WITH_SEC true  // Show secconds in header
 
 // Constants - Misc
-const char FIRMWARE_VERSION[] = "5.1";
+const char FIRMWARE_VERSION[] = "5.2";
 const char COMPILE_DATE[] = __DATE__ " " __TIME__;
 
 // ++++++++++++++++++++++++++++++++++++++++
@@ -1061,6 +1061,7 @@ void wifiConnect()
     }
     setStatus(COLOR_BLUE);
     wifiStatus = WiFiStatus::Client;
+    WiFi.setAutoReconnect(true);
 
     lcd.noBlink();
     lcd.clear();
